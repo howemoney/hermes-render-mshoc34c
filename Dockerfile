@@ -32,10 +32,14 @@ RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
 # in the base image but the `langfuse` Python package does not, so traces never
 # emit. It cannot be added at runtime: the gateway runs as the unprivileged
 # `hermes` user while /opt/hermes/.venv/lib/.../site-packages is root-owned, so
-# `pip install` fails with EACCES. Installing here (as root, at build time)
+# a runtime install fails with EACCES. Installing here (as root, at build time)
 # persists it across redeploys and lets the plugin send traces once the
 # HERMES_LANGFUSE_* keys are set.
-RUN /opt/hermes/.venv/bin/pip install --no-cache-dir langfuse
+#
+# The venv is uv-managed (see /opt/hermes/.venv/pyvenv.cfg) and ships without
+# pip / ensurepip, so `pip install` is not available. Use the `uv` binary that
+# the base image already provides, targeting the venv's interpreter explicitly.
+RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache langfuse
 
 # Pull the official Render skill bundle from github.com/render-oss/skills
 # at a pinned commit. Mounted via skills.external_dirs at boot, so the
