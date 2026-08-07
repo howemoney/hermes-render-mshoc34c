@@ -41,6 +41,61 @@ RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
 # the base image already provides, targeting the venv's interpreter explicitly.
 RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache langfuse
 
+# Bake operator CLIs into the image. The header note above says installing
+# extra CLIs should be a conscious operator choice — this is that choice: the
+# Render + Cloudflare MCP servers cover most flows, but the human operator
+# asked for the matching CLIs for shell-level use.
+#
+# Render CLI: fetched from GitHub releases, arch-matched to the build platform
+# via TARGETARCH (amd64 on Render, arm64 on local Apple-Silicon test builds).
+# The release zip carries a single `cli` binary; extract with python's stdlib
+# zipfile (no `unzip` dependency) and install it as `render`. Authenticates
+# non-interactively at runtime via RENDER_API_KEY.
+ARG RENDER_CLI_VERSION=2.22.0
+ARG TARGETARCH
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    url="https://github.com/render-oss/cli/releases/download/v${RENDER_CLI_VERSION}/cli_${RENDER_CLI_VERSION}_linux_${arch}.zip"; \
+    curl -fsSL --retry 3 -o /tmp/render-cli.zip "$url"; \
+    python3 -m zipfile -e /tmp/render-cli.zip /tmp/render-cli/; \
+    bin="$(find /tmp/render-cli -type f | grep -viE '\.(txt|md|zip)$|license|readme|changelog' | head -n1)"; \
+    test -n "$bin"; \
+    install -m 0755 "$bin" /usr/local/bin/render; \
+    rm -rf /tmp/render-cli /tmp/render-cli.zip; \
+    render --version
+
+# Cloudflare Wrangler: pure-Node CLI. Pinned to the v3 line on purpose — the
+# base image ships Node 20, but Wrangler v4.119+ hard-requires Node 22 and
+# refuses to run otherwise. Wrangler v3 supports Node 18+ and covers every
+# deploy/list/KV/R2/D1 flow. Bump this once the base image moves to Node 22.
+# Installed globally as root at build time. Authenticates at runtime via
+# CLOUDFLARE_API_TOKEN — the same token as the Cloudflare MCP server.
+ARG WRANGLER_VERSION=3
+RUN npm install -g "wrangler@${WRANGLER_VERSION}" \
+ && wrangler --version
+
+# GitHub MCP server (official Go binary), run over stdio. We bake the binary
+# instead of using GitHub's hosted https://api.githubcopilot.com/mcp/ endpoint,
+# which returned 400 to a plain PAT. The local server talks straight to the
+# GitHub API with a token passed via GITHUB_PERSONAL_ACCESS_TOKEN, wired in
+# config.yaml as an mcp_servers stdio entry. Arch names differ from Docker's:
+# goreleaser ships x86_64 (amd64) and arm64.
+ARG GITHUB_MCP_VERSION=1.8.0
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) gharch=x86_64 ;; \
+      arm64) gharch=arm64 ;; \
+      *) gharch="${TARGETARCH}" ;; \
+    esac; \
+    url="https://github.com/github/github-mcp-server/releases/download/v${GITHUB_MCP_VERSION}/github-mcp-server_Linux_${gharch}.tar.gz"; \
+    curl -fsSL --retry 3 -o /tmp/ghmcp.tar.gz "$url"; \
+    tar -xzf /tmp/ghmcp.tar.gz -C /tmp; \
+    bin="$(find /tmp -maxdepth 2 -type f -name github-mcp-server | head -n1)"; \
+    test -n "$bin"; \
+    install -m 0755 "$bin" /usr/local/bin/github-mcp-server; \
+    rm -rf /tmp/ghmcp.tar.gz "$bin"; \
+    github-mcp-server --help >/dev/null
+
 # Pull the official Render skill bundle from github.com/render-oss/skills
 # at a pinned commit. Mounted via skills.external_dirs at boot, so the
 # upstream Hermes skills-sync flow never touches these files. To upgrade,
