@@ -41,6 +41,19 @@ RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
 # the base image already provides, targeting the venv's interpreter explicitly.
 RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache langfuse
 
+# Put `hermes` on PATH for spawned processes. The kanban dispatcher shells out
+# to a bare `hermes` to start each worker, but the binary lives in the venv at
+# /opt/hermes/.venv/bin/hermes, which is not on PATH for dispatcher-spawned
+# children — so every assigned task is silently SKIPPED and no worker ever runs
+# (observed 2026-08-09: 7 ready+assigned tasks, zero dispatches).
+#
+# This cannot be fixed at runtime: the agent runs as uid 10000 (`hermes`) and
+# /usr/local/bin is root-owned, so the symlink fails with EACCES and `sudo` is
+# not installed. Creating it here, as root at build time, persists across
+# redeploys.
+RUN ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
+ && /usr/local/bin/hermes --version >/dev/null
+
 # Bake operator CLIs into the image. The header note above says installing
 # extra CLIs should be a conscious operator choice — this is that choice: the
 # Render + Cloudflare MCP servers cover most flows, but the human operator
