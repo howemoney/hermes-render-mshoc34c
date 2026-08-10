@@ -12,7 +12,7 @@
 # operator choice, not something the agent does as an automatic fallback.
 #
 # Pin the upstream tag here. Bump and redeploy to upgrade Hermes.
-ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.5.7
+ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.3
 FROM ${HERMES_IMAGE}
 
 # Workarounds for upstream issues that prevent the dashboard's Chat tab
