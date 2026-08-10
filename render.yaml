@@ -42,16 +42,56 @@ services:
       # keys, and chat platform tokens are set through the Hermes dashboard
       # (API Keys tab), which writes them to /opt/data/.env on the disk.
 
-      # Dashboard side-process. The entrypoint backgrounds `hermes dashboard`
-      # before exec'ing `gateway run` whenever HERMES_DASHBOARD is truthy.
-      # HERMES_DASHBOARD_HOST=0.0.0.0 makes the entrypoint pass --insecure
-      # so the dashboard accepts non-loopback binds.
+      # Dashboard, supervised by s6 as its own service. Render only routes to
+      # port 10000, so the bind host must be 0.0.0.0 — which engages Hermes'
+      # dashboard auth gate.
+      #
+      # The gate is FAIL-CLOSED as of Hermes v0.20.0: on a non-loopback bind
+      # with no auth provider registered, `hermes dashboard` refuses to bind
+      # at all, nothing listens on 10000, and the deploy fails its health
+      # check. The old `--insecure` escape hatch is now accepted-and-ignored,
+      # so the OIDC settings below are REQUIRED, not optional.
       - key: HERMES_DASHBOARD
         value: "1"
       - key: HERMES_DASHBOARD_HOST
         value: "0.0.0.0"
       - key: HERMES_DASHBOARD_PORT
         value: "10000"
+
+      # Auth provider: the bundled self-hosted OIDC plugin, pointed at the
+      # Cloudflare Access tenant that already fronts hermes.howe.ceo. This
+      # keeps a single Cloudflare identity — no second password, no third-party
+      # account — and Access remains the internet-facing gate.
+      #
+      # Provisioned as an Access "SaaS application" with the OIDC protocol
+      # (Zero Trust > Access controls > Applications), redirect URL
+      # <HERMES_DASHBOARD_PUBLIC_URL>/auth/callback. Cloudflare issues a
+      # client_id + client_secret and serves per-application OIDC discovery at
+      #   https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client_id>
+      # which is what the issuer below must be set to — the team-level
+      # /.well-known/openid-configuration only carries issuer + jwks_uri and
+      # has no authorization/token endpoints, so it will NOT work here.
+      #
+      # All three are `sync: false` so credentials live in the Render
+      # Environment tab, never in this repo.
+      - key: HERMES_DASHBOARD_OIDC_ISSUER
+        sync: false
+      - key: HERMES_DASHBOARD_OIDC_CLIENT_ID
+        sync: false
+      # Cloudflare Access is a confidential client. The upstream docs page
+      # claims confidential clients are unsupported, but that note is stale —
+      # plugins/dashboard_auth/self_hosted handles client_secret_basic /
+      # client_secret_post and sends PKCE in both modes.
+      - key: HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+        sync: false
+
+      # The dashboard derives its OAuth callback from X-Forwarded-* headers by
+      # default. Behind the Render edge plus the Cloudflare proxy that chain
+      # isn't reliable, so declare the public URL explicitly — the callback
+      # becomes "<this value>/auth/callback" verbatim, which must match the
+      # redirect URL registered on the Access SaaS app.
+      - key: HERMES_DASHBOARD_PUBLIC_URL
+        value: "https://hermes.howe.ceo"
       # Exposes a Chat tab in the dashboard that embeds the full Hermes TUI
       # over a server-side PTY + xterm.js. This is how you chat with the
       # agent without a real terminal on the host side.

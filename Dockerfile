@@ -135,19 +135,35 @@ RUN set -eu; \
 # overlays would shadow upstream entries.
 COPY --chown=hermes:hermes skills/ /opt/render-tools/skills-local/
 
-# Boot-time wrapper: patches /opt/data/config.yaml, then hands off to
-# the upstream entrypoint chain (tini → docker/entrypoint.sh).
-COPY --chown=root:root scripts/bootstrap.sh /opt/render-tools/bootstrap.sh
+# Boot-time config patch, wired in as an s6-overlay cont-init hook.
+#
+# Numbered 016- so it lands after the upstream 01-hermes-setup hook (which
+# seeds and chowns config.yaml) and before 02-reconcile-profiles starts a
+# gateway. Every cont-init.d hook finishes before s6-rc starts main-hermes
+# and dashboard, so the patch is applied before anything reads the config.
 COPY --chown=root:root scripts/patch-config.py /opt/render-tools/patch-config.py
-RUN chmod 0755 /opt/render-tools/bootstrap.sh /opt/render-tools/patch-config.py
+COPY --chmod=0755 scripts/cont-init-patch-config.sh /etc/cont-init.d/016-render-patch-config
+RUN chmod 0755 /opt/render-tools/patch-config.py
 
 # Pre-create the dir the patcher writes to so chown works cleanly on
 # first boot. The mounted disk replaces this empty dir at runtime;
 # baking it just keeps the image self-contained for any non-disk use.
 RUN install -d -o hermes -g hermes -m 0755 /opt/data
 
-# Stay as root so the bootstrap can chown the mounted /opt/data on first
-# boot, then `gosu hermes` for the config patch, then exec the upstream
-# entrypoint (which also runs as root and does its own gosu drop).
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/render-tools/bootstrap.sh"]
+# No ENTRYPOINT override — inherit the base image's entrypoint-dispatch.sh.
+#
+# Through v2026.5.7 this image set `ENTRYPOINT ["/usr/bin/tini", "-g", "--",
+# "/opt/render-tools/bootstrap.sh"]`. That silently became fatal in v2026.8.3:
+# /usr/bin/tini is now a shim that strips the tini flags and execs
+# `/init main-wrapper.sh <our args>`, so s6 came up and then ran bootstrap.sh
+# as the container's main program. bootstrap.sh ended with
+# `exec /opt/hermes/docker/entrypoint.sh`, which in v2026.8.3 is a deprecated
+# shim that re-runs the stage2 bootstrap and deliberately does NOT exec the
+# CMD. The main program therefore exited immediately, s6 tore down the whole
+# supervision tree, and the deploy failed its health check. Upstream's
+# migration note says exactly this: "drop the override — docker will use the
+# image's default ENTRYPOINT dispatcher, which handles bootstrap AND CMD."
+#
+# CMD stays: main-wrapper.sh routes a non-executable first arg through
+# `hermes <args>`, so this still resolves to `hermes gateway run`.
 CMD ["gateway", "run"]
