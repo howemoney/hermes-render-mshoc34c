@@ -135,6 +135,19 @@ RUN set -eu; \
 # overlays would shadow upstream entries.
 COPY --chown=hermes:hermes skills/ /opt/render-tools/skills-local/
 
+# Repair the dashboard Files page. Upstream's GET /api/files builds its entry
+# list in a comprehension, so ONE child of the locked root (/opt/data on a
+# hosted deploy) that resolves outside it — any symlink off the data disk, and
+# the agent makes those — raises 403 and the page shows nothing but
+# `Error: 403: {"detail":"Path outside managed files root"}`. The patch skips
+# and logs such entries instead of failing the request; the sandbox is
+# unchanged. Applied at build time because /opt/hermes is root-owned and the
+# gateway runs as uid 10000. Fails the build if upstream moves the code — see
+# the script's docstring, and delete both once upstream fixes the listing.
+COPY --chown=root:root scripts/patch-files-page.py /opt/render-tools/patch-files-page.py
+RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_server.py \
+ && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text())"
+
 # Boot-time config patch, wired in as an s6-overlay cont-init hook.
 #
 # Numbered 016- so it lands after the upstream 01-hermes-setup hook (which
