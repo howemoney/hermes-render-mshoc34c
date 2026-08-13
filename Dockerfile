@@ -41,6 +41,20 @@ RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
 # the base image already provides, targeting the venv's interpreter explicitly.
 RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache langfuse
 
+# Bake the FAL client into the image so image generation works.
+#
+# The `image_generate` tool routes through FAL.ai (`fal-ai/flux-2/klein/9b` by
+# default; the catalog also includes GPT Image, Gemini/Nano-Banana, Ideogram,
+# Recraft, Qwen, Krea). The `fal-client` package lives in upstream's `fal`
+# extra, which is deliberately excluded from `[all]` (image backends are meant
+# to lazy-install at first use via tools/lazy_deps.py). On this host that
+# lazy-install path fails: it shells to `pip`, but the uv-managed venv ships
+# no pip/ensurepip, and the runtime user (uid 10000) cannot write the
+# root-owned site-packages anyway (EACCES). Same reason as the langfuse bake
+# above — install here as root, at build time, so it persists across redeploys
+# and the image toolset reports available=True.
+RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache 'fal-client==0.13.1'
+
 # Put `hermes` on PATH for spawned processes. The kanban dispatcher shells out
 # to a bare `hermes` to start each worker, but the binary lives in the venv at
 # /opt/hermes/.venv/bin/hermes, which is not on PATH for dispatcher-spawned
