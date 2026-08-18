@@ -166,15 +166,14 @@ RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_ser
 # The patch adds a general document-cache endpoint, a paperclip/file picker,
 # and image/document drag-drop. It also makes raw upload fetches follow the
 # structured OIDC 401 login_url instead of painting "Unauthorized" in red.
-# Rebuild the Vite bundle after patching the TypeScript source, then copy the
-# generated assets into the package directory served by web_server.py.
+# Rebuild the Vite bundle after patching the TypeScript source. Upstream Vite
+# already emits directly into hermes_cli/web_dist, which web_server.py serves.
 COPY --chown=root:root scripts/patch-chat-attachments.py /opt/render-tools/patch-chat-attachments.py
 RUN python3 /opt/render-tools/patch-chat-attachments.py /opt/hermes \
  && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text()); ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_models.py').read_text())" \
  && cd /opt/hermes \
  && npm run build --workspace web \
- && rm -rf /opt/hermes/hermes_cli/web_dist \
- && cp -a /opt/hermes/web/dist /opt/hermes/hermes_cli/web_dist
+ && test -f /opt/hermes/hermes_cli/web_dist/index.html
 
 # Boot-time config patch, wired in as an s6-overlay cont-init hook.
 #
