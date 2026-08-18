@@ -1,0 +1,5 @@
+name: dropzone
+version: 1.0.0
+description: Drag-and-drop file, image, and PDF upload for the Hermes web dashboard chat.
+author: Howe Agency
+license: MIT

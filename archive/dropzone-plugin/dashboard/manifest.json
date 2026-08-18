@@ -1,0 +1,14 @@
+{
+  "name": "dropzone",
+  "label": "Dropzone",
+  "description": "Drag-and-drop images, PDFs and documents into the dashboard chat",
+  "icon": "Paperclip",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/dropzone",
+    "hidden": true
+  },
+  "slots": ["chat:top"],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
