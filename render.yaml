@@ -85,6 +85,21 @@ services:
       - key: HERMES_DASHBOARD_OIDC_CLIENT_SECRET
         sync: false
 
+      # Session lifetime. The dashboard session cookie's Max-Age equals the
+      # ID token's `exp` (routes.py: expires_in = exp - now), and by default
+      # start_login requests only `openid profile email` — no offline_access —
+      # so no refresh token is issued and the whole dashboard session silently
+      # dies at ID-token expiry (observed live 2026-08-18: two expiries within
+      # ~15 minutes; every cookie-gated /api call starts returning 401
+      # {"reason":"no_cookie"} while the chat PTY websocket — authenticated
+      # once at connect — keeps working). Requesting offline_access lets the
+      # gate's refresh path (middleware _attempt_refresh) renew the session.
+      # Pair this with "Enable refresh tokens" ON the Access SaaS application
+      # (Zero Trust > Access > Applications > <app> > Settings) and consider
+      # raising the app's session/ID-token duration there too.
+      - key: HERMES_DASHBOARD_OIDC_SCOPES
+        value: "openid profile email offline_access"
+
       # The dashboard derives its OAuth callback from X-Forwarded-* headers by
       # default. Behind the Render edge plus the Cloudflare proxy that chain
       # isn't reliable, so declare the public URL explicitly — the callback

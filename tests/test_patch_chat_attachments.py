@@ -75,6 +75,21 @@ class PatchChatAttachmentsTests(unittest.TestCase):
         self.assertIn("scripts/patch-chat-attachments.py", dockerfile)
         self.assertIn("npm run build --workspace web", dockerfile)
 
+    def test_archived_dropzone_plugin_stays_archived(self):
+        """The retired dropzone plugin must never ship in the image.
+
+        Its plugin_api.py re-implements the legacy loopback-token check, which
+        401s every request in gated OIDC mode, and its final JS bundle hides
+        the native paperclip this patch provides (see
+        archive/dropzone-plugin/README.md). Keep the archive out of the build
+        and keep chat:top free of attach plugins.
+        """
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+        self.assertNotIn("archive/", dockerfile)
+        self.assertNotIn("dropzone", dockerfile.lower())
+        readme = (REPO_ROOT / "archive" / "dropzone-plugin" / "README.md")
+        self.assertTrue(readme.is_file(), "archive/dropzone-plugin/README.md missing")
+
 
 if __name__ == "__main__":
     unittest.main()
