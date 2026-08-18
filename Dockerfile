@@ -162,6 +162,20 @@ COPY --chown=root:root scripts/patch-files-page.py /opt/render-tools/patch-files
 RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_server.py \
  && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text())"
 
+# Fix gated-mode upload authentication and add unified Chat attachments.
+# The patch adds a general document-cache endpoint, a paperclip/file picker,
+# and image/document drag-drop. It also makes raw upload fetches follow the
+# structured OIDC 401 login_url instead of painting "Unauthorized" in red.
+# Rebuild the Vite bundle after patching the TypeScript source, then copy the
+# generated assets into the package directory served by web_server.py.
+COPY --chown=root:root scripts/patch-chat-attachments.py /opt/render-tools/patch-chat-attachments.py
+RUN python3 /opt/render-tools/patch-chat-attachments.py /opt/hermes \
+ && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text()); ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_models.py').read_text())" \
+ && cd /opt/hermes \
+ && npm run build --workspace web \
+ && rm -rf /opt/hermes/hermes_cli/web_dist \
+ && cp -a /opt/hermes/web/dist /opt/hermes/hermes_cli/web_dist
+
 # Boot-time config patch, wired in as an s6-overlay cont-init hook.
 #
 # Numbered 016- so it lands after the upstream 01-hermes-setup hook (which
