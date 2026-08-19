@@ -19,11 +19,12 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=404, detail="Path not found")
 
     try:
-        entries = [
-            _managed_file_entry(policy, child)
-            for child in target.iterdir()
-            if not _is_sensitive_path(child)
-        ]
+        with os.scandir(target) as scan:
+            entries = [
+                _managed_file_entry(policy, Path(entry.path))
+                for entry in scan
+                if not _is_sensitive_path(Path(entry.path))
+            ]
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     return {"entries": entries}
@@ -61,7 +62,8 @@ class PatchFilesPageTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn(module.MARKER, patched)
-        self.assertNotIn("for child in target.iterdir()\n", patched)
+        self.assertNotIn("entries = [\n", patched)
+        self.assertIn("with os.scandir(target) as scan:", patched)
         ast.parse(patched)
 
     def test_patched_listing_skips_only_400_and_403(self):

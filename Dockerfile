@@ -12,21 +12,23 @@
 # operator choice, not something the agent does as an automatic fallback.
 #
 # Pin the upstream tag here. Bump and redeploy to upgrade Hermes.
-ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.3
+#   v2026.8.3  (v0.20.0) -> v2026.8.18 (v0.20.4) on 2026-08-19: brings the
+#   kanban fixes this deployment depends on (reconcile_orphans for zombie
+#   claims, a real review lifecycle + the bundled sdlc-review skill,
+#   worktree cleanup, `hermes pause`). Boot contract (entrypoint-dispatch.sh,
+#   s6 services, cont-init hooks) is unchanged between the two tags.
+ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.18
 FROM ${HERMES_IMAGE}
 
-# Workarounds for upstream issues that prevent the dashboard's Chat tab
-# from connecting on hosted deploys. Baked into the image so the runtime
-# command stays simple. See render.yaml comments + the README for context.
-#   - chown: dashboard runs as `hermes` but ui-tui/ + node_modules/ ship root-owned
-#   - touch ink-bundle.js: short-circuits _hermes_ink_bundle_stale()
-#   - touch entry.js: bumps mtime above source .ts files so _tui_build_needed() returns False
+# Everything below runs as root at build time; the runtime user is still the
+# upstream `hermes` (uid 10000) via entrypoint-dispatch.sh.
+#
+# (Up to v2026.8.3 this block also chown'ed /opt/hermes/ui-tui + node_modules
+# and touched two bundle files so the dashboard Chat tab would not try an
+# in-place TUI rebuild as the unprivileged user. Upstream now bakes a prebuilt
+# TUI bundle and sets HERMES_TUI_DIR=/opt/hermes/ui-tui, so the launcher takes
+# the read-only fast path and that workaround is obsolete.)
 USER root
-RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
- && mkdir -p /opt/hermes/ui-tui/packages/hermes-ink/dist /opt/hermes/ui-tui/dist \
- && touch /opt/hermes/ui-tui/packages/hermes-ink/dist/ink-bundle.js \
-          /opt/hermes/ui-tui/dist/entry.js \
- && chown -R hermes:hermes /opt/hermes/ui-tui
 
 # Bake the Langfuse SDK into the image. The observability/langfuse plugin ships
 # in the base image but the `langfuse` Python package does not, so traces never
@@ -122,6 +124,23 @@ RUN set -eu; \
     install -m 0755 "$bin" /usr/local/bin/github-mcp-server; \
     rm -rf /tmp/ghmcp.tar.gz "$bin"; \
     github-mcp-server --help >/dev/null
+
+# GitHub CLI. Kanban workers push a `wt/<task>` branch and open a PR; the
+# reviewer waits on CI (`gh pr checks --watch`) and squash-merges
+# (`gh pr merge --squash`). The upstream image ships `git` but not `gh`, and
+# the dispatcher-spawned workers have no MCP servers, so the CLI is the
+# integration. Authenticates non-interactively via GH_TOKEN at runtime
+# (fine-grained PAT scoped to the target repo; set in the Render Environment
+# tab). Static tarball, arch-matched via TARGETARCH (amd64 / arm64).
+ARG GH_CLI_VERSION=2.97.0
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    url="https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSL --retry 3 -o /tmp/gh.tar.gz "$url"; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}"; \
+    gh --version
 
 # Pull the official Render skill bundle from github.com/render-oss/skills
 # at a pinned commit. Mounted via skills.external_dirs at boot, so the

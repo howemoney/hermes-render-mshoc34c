@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build-time patch adding reliable dashboard chat attachments on Hermes v2026.8.3.
+"""Build-time patch adding reliable dashboard chat attachments on Hermes v2026.8.18
+(first shipped against v2026.8.3; server-side anchors re-based on upgrade).
 
 The patch has two parts:
 1. raw authenticated fetches redirect to login on a structured gated-mode 401
@@ -61,48 +62,62 @@ def patch_server(path: Path, source: str) -> str:
         "    ChatImageUpload,\n    ChatFileUpload,\n    ManagedDirectoryCreate,",
         "model import",
     )
-    anchor = '''    return {
-        "ok": True,
-        "path": str(target),
-        "name": target.name,
-        "bytes": len(data),
-        "mime_type": mime_type,
-    }
+    # Upstream (v2026.8.18) runs the image-upload body inside a nested
+    # ``_run()`` that is dispatched via ``asyncio.to_thread``; the return dict
+    # is therefore indented one level deeper than it was on v2026.8.3, and is
+    # followed by the to_thread comment block. Two anchors: the dict itself
+    # (to tag the image kind) and the handler's tail (to append our route).
+    source = replace_once(
+        path,
+        source,
+        '''            "mime_type": mime_type,
+        }
+
+    # _profile_scope acquires _SKILLS_PROFILE_LOCK''',
+        '''            "mime_type": mime_type,
+            "kind": "image",
+        }
+
+    # _profile_scope acquires _SKILLS_PROFILE_LOCK''',
+        "image upload kind",
+    )
+    anchor = '''    return await asyncio.to_thread(_run)
 
 
 @app.get("/api/files")'''
-    replacement = '''    return {
-        "ok": True,
-        "path": str(target),
-        "name": target.name,
-        "bytes": len(data),
-        "mime_type": mime_type,
-        "kind": "image",
-    }
+    replacement = '''    return await asyncio.to_thread(_run)
 
 
 @app.post("/api/chat/file-upload")
 async def upload_chat_file(payload: ChatFileUpload, profile: Optional[str] = None):
-    """Cache a browser-provided document and return an agent-visible path."""
-    data, mime_type = _decode_data_url(payload.data_url)
-    filename = Path(_sanitize_chat_image_filename(payload.filename)).name
-    if not filename:
-        filename = "attachment.bin"
-    with _profile_scope(profile):
-        from gateway.platforms.base import cache_document_from_bytes
-        try:
-            target = cache_document_from_bytes(data, filename)
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=f"Could not cache attachment: {exc}")
-    return {
-        "ok": True,
-        "path": str(target),
-        "name": Path(target).name,
-        "bytes": len(data),
-        "mime_type": mime_type,
-        "kind": "document",
-        "marker": "_RENDER_TOOLS_CHAT_ATTACHMENTS_PATCH",
-    }
+    """Cache a browser-provided document and return an agent-visible path.
+
+    [render-tools] Mirrors ``upload_chat_image`` above: the body runs in a
+    worker thread because ``_profile_scope`` takes a lock and the document
+    cache does file I/O.
+    """
+    def _run():
+        data, mime_type = _decode_data_url(payload.data_url)
+        filename = Path(_sanitize_chat_image_filename(payload.filename)).name
+        if not filename:
+            filename = "attachment.bin"
+        with _profile_scope(profile):
+            from gateway.platforms.base import cache_document_from_bytes
+            try:
+                target = cache_document_from_bytes(data, filename)
+            except (OSError, ValueError) as exc:
+                raise HTTPException(status_code=500, detail=f"Could not cache attachment: {exc}")
+        return {
+            "ok": True,
+            "path": str(target),
+            "name": Path(target).name,
+            "bytes": len(data),
+            "mime_type": mime_type,
+            "kind": "document",
+            "marker": "_RENDER_TOOLS_CHAT_ATTACHMENTS_PATCH",
+        }
+
+    return await asyncio.to_thread(_run)
 
 
 @app.get("/api/files")'''
@@ -244,8 +259,8 @@ def patch_chat_page(path: Path, source: str) -> str:
     source = replace_once(
         path,
         source,
-        "  const hostRef = useRef<HTMLDivElement | null>(null);\n  const termRef",
-        "  const hostRef = useRef<HTMLDivElement | null>(null);\n  const fileInputRef = useRef<HTMLInputElement | null>(null);\n  const termRef",
+        "  const hostRef = useRef<HTMLDivElement | null>(null);\n",
+        "  const hostRef = useRef<HTMLDivElement | null>(null);\n  const fileInputRef = useRef<HTMLInputElement | null>(null);\n",
         "file input ref",
     )
     source = source.replace("imageFilesFromTransfer(ev.clipboardData)", "filesFromTransfer(ev.clipboardData)")

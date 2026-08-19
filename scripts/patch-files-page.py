@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Build-time patch for the dashboard Files page listing on Render.
 
-Upstream bug (observed on nousresearch/hermes-agent:v2026.8.3, dashboard
-route ``GET /api/files``):
+Upstream bug (observed on nousresearch/hermes-agent:v2026.8.3, still present
+at v2026.8.18, dashboard route ``GET /api/files``):
 
-    entries = [
-        _managed_file_entry(policy, child)
-        for child in target.iterdir()
-        if not _is_sensitive_path(child)
-    ]
+    with os.scandir(target) as scan:
+        entries = [
+            _managed_file_entry(policy, Path(entry.path))
+            for entry in scan
+            if not _is_sensitive_path(Path(entry.path))
+        ]
+
+(v2026.8.3 spelled the same comprehension over ``target.iterdir()``; the
+anchor below tracks the current ``os.scandir`` form.)
 
 ``_managed_file_entry()`` resolves every child and raises
 ``HTTPException(403, "Path outside managed files root")`` when the resolved
@@ -43,11 +47,12 @@ from pathlib import Path
 MARKER = "_RENDER_TOOLS_FILES_PATCH"
 
 ANCHOR = """    try:
-        entries = [
-            _managed_file_entry(policy, child)
-            for child in target.iterdir()
-            if not _is_sensitive_path(child)
-        ]
+        with os.scandir(target) as scan:
+            entries = [
+                _managed_file_entry(policy, Path(entry.path))
+                for entry in scan
+                if not _is_sensitive_path(Path(entry.path))
+            ]
     except PermissionError:
 """
 
@@ -56,20 +61,22 @@ REPLACEMENT = """    # [render-tools] One child that resolves outside the locked
     # Skip those entries -- and log them -- instead of failing the request.
     try:
         entries = []  # _RENDER_TOOLS_FILES_PATCH
-        for child in target.iterdir():
-            if _is_sensitive_path(child):
-                continue
-            try:
-                entries.append(_managed_file_entry(policy, child))
-            except HTTPException as exc:
-                if exc.status_code in (400, 403):
-                    _log.warning(
-                        "[render-tools] files listing: skipping %s (%s)",
-                        child,
-                        exc.detail,
-                    )
+        with os.scandir(target) as scan:
+            for entry in scan:
+                child = Path(entry.path)
+                if _is_sensitive_path(child):
                     continue
-                raise
+                try:
+                    entries.append(_managed_file_entry(policy, child))
+                except HTTPException as exc:
+                    if exc.status_code in (400, 403):
+                        _log.warning(
+                            "[render-tools] files listing: skipping %s (%s)",
+                            child,
+                            exc.detail,
+                        )
+                        continue
+                    raise
     except PermissionError:
 """
 
