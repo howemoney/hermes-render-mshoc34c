@@ -12,7 +12,12 @@
 # operator choice, not something the agent does as an automatic fallback.
 #
 # Pin the upstream tag here. Bump and redeploy to upgrade Hermes.
-ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.3
+#   v2026.8.3  (v0.20.0) -> v2026.8.18 (v0.20.4) on 2026-08-19: brings the
+#   kanban fixes this deployment depends on (reconcile_orphans for zombie
+#   claims, a real review lifecycle + the bundled sdlc-review skill,
+#   worktree cleanup, `hermes pause`). Boot contract (entrypoint-dispatch.sh,
+#   s6 services, cont-init hooks) is unchanged between the two tags.
+ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.18
 FROM ${HERMES_IMAGE}
 
 # Workarounds for upstream issues that prevent the dashboard's Chat tab
@@ -122,6 +127,23 @@ RUN set -eu; \
     install -m 0755 "$bin" /usr/local/bin/github-mcp-server; \
     rm -rf /tmp/ghmcp.tar.gz "$bin"; \
     github-mcp-server --help >/dev/null
+
+# GitHub CLI. Kanban workers push a `wt/<task>` branch and open a PR; the
+# reviewer waits on CI (`gh pr checks --watch`) and squash-merges
+# (`gh pr merge --squash`). The upstream image ships `git` but not `gh`, and
+# the dispatcher-spawned workers have no MCP servers, so the CLI is the
+# integration. Authenticates non-interactively via GH_TOKEN at runtime
+# (fine-grained PAT scoped to the target repo; set in the Render Environment
+# tab). Static tarball, arch-matched via TARGETARCH (amd64 / arm64).
+ARG GH_CLI_VERSION=2.97.0
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    url="https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSL --retry 3 -o /tmp/gh.tar.gz "$url"; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}"; \
+    gh --version
 
 # Pull the official Render skill bundle from github.com/render-oss/skills
 # at a pinned commit. Mounted via skills.external_dirs at boot, so the
