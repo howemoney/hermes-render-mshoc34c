@@ -20,18 +20,15 @@
 ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.18
 FROM ${HERMES_IMAGE}
 
-# Workarounds for upstream issues that prevent the dashboard's Chat tab
-# from connecting on hosted deploys. Baked into the image so the runtime
-# command stays simple. See render.yaml comments + the README for context.
-#   - chown: dashboard runs as `hermes` but ui-tui/ + node_modules/ ship root-owned
-#   - touch ink-bundle.js: short-circuits _hermes_ink_bundle_stale()
-#   - touch entry.js: bumps mtime above source .ts files so _tui_build_needed() returns False
+# Everything below runs as root at build time; the runtime user is still the
+# upstream `hermes` (uid 10000) via entrypoint-dispatch.sh.
+#
+# (Up to v2026.8.3 this block also chown'ed /opt/hermes/ui-tui + node_modules
+# and touched two bundle files so the dashboard Chat tab would not try an
+# in-place TUI rebuild as the unprivileged user. Upstream now bakes a prebuilt
+# TUI bundle and sets HERMES_TUI_DIR=/opt/hermes/ui-tui, so the launcher takes
+# the read-only fast path and that workaround is obsolete.)
 USER root
-RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
- && mkdir -p /opt/hermes/ui-tui/packages/hermes-ink/dist /opt/hermes/ui-tui/dist \
- && touch /opt/hermes/ui-tui/packages/hermes-ink/dist/ink-bundle.js \
-          /opt/hermes/ui-tui/dist/entry.js \
- && chown -R hermes:hermes /opt/hermes/ui-tui
 
 # Bake the Langfuse SDK into the image. The observability/langfuse plugin ships
 # in the base image but the `langfuse` Python package does not, so traces never
