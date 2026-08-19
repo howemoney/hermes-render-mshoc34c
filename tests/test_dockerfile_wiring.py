@@ -230,6 +230,10 @@ class BootstrapDryRunTests(unittest.TestCase):
                 "PATH": f"{self.bin}:{os.environ.get('PATH', '')}",
                 "HERMES_HOME": str(self.data),
                 "RENDER_TOOLS_DIR": str(self.tools),
+                # Inside the image s6-setuidgid exists and the test runs as
+                # root against a root-owned temp tree; force "no drop" so the
+                # script's own logic -- not uid plumbing -- is what we test.
+                "RENDER_TOOLS_DROP": "",
                 "HERMES_BIN": str(self.bin / "hermes"),
                 "HERMES_VENV_PYTHON": sys.executable,
                 "HERMES_FAKE_LOG": str(self.hermes_log),

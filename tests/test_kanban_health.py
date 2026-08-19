@@ -385,10 +385,19 @@ class RunEndToEndTests(unittest.TestCase):
             self.assertNotIn("escalated t_", out, "dry-run must never touch the board")
 
     def test_internal_error_exits_zero_and_stays_silent_on_stdout(self):
-        # An unwritable state dir makes run() raise; main() is the cron entry
+        # An unwritable state path makes run() raise; main() is the cron entry
         # point and must swallow it (non-zero exit would page via the watchdog).
-        argv = ["kanban-health", "--state-file", "/nonexistent-dir/x/state.json",
-                "--db", "/nonexistent-dir/kanban.db", "--no-github"]
+        # The parent of the state file is a regular FILE, so mkdir(parents=True)
+        # fails with NotADirectoryError even when the test runs as root (inside
+        # the image) -- a bare "/nonexistent-dir" would simply be created there.
+        with TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "not-a-dir"
+            blocker.write_text("")
+            argv = ["kanban-health", "--state-file", str(blocker / "x" / "state.json"),
+                    "--db", str(Path(tmp) / "kanban.db"), "--no-github"]
+            self._assert_silent_error(argv)
+
+    def _assert_silent_error(self, argv):
         out, err = io.StringIO(), io.StringIO()
         saved_argv = sys.argv
         sys.argv = argv

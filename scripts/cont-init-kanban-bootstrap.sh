@@ -89,7 +89,16 @@ export GIT_TERMINAL_PROMPT=0
 # ---------------------------------------------------------------------------
 # Privilege drop (verbatim pattern from 016-render-patch-config).
 # ---------------------------------------------------------------------------
-if command -v s6-setuidgid >/dev/null 2>&1; then
+#
+# RENDER_TOOLS_DROP is a test-only override (same family as RENDER_TOOLS_DIR /
+# HERMES_BIN below): when it is SET -- even to the empty string -- it is used
+# verbatim instead of probing for s6-setuidgid. The in-image test run executes
+# this script as root against a root-owned temp tree, where dropping to
+# `hermes` would make every write fail for reasons unrelated to the script.
+# Real boots never set it.
+if [ -n "${RENDER_TOOLS_DROP+x}" ]; then
+  DROP="${RENDER_TOOLS_DROP}"
+elif command -v s6-setuidgid >/dev/null 2>&1; then
   DROP="s6-setuidgid hermes"
 elif [ -x /command/s6-setuidgid ]; then
   DROP="/command/s6-setuidgid hermes"
@@ -105,9 +114,17 @@ fi
 as_hermes() { ${DROP} "$@"; }
 
 # `hermes` CLI: the venv binary by absolute path (what the /opt/hermes/bin
-# shim execs into anyway); PATH lookup as a fallback.
-if [ -n "${HERMES_BIN:-}" ] && [ -x "${HERMES_BIN}" ]; then
-  HERMES="${HERMES_BIN}"
+# shim execs into anyway); PATH lookup as a fallback. An explicit HERMES_BIN
+# is authoritative: if it is set but not executable we treat hermes as
+# absent rather than silently falling back to the baked binary (that is what
+# lets the "no hermes on this box" path be exercised inside the image).
+if [ -n "${HERMES_BIN:-}" ]; then
+  if [ -x "${HERMES_BIN}" ]; then
+    HERMES="${HERMES_BIN}"
+  else
+    HERMES=""
+    warn "hermes CLI not found at HERMES_BIN=${HERMES_BIN}; profile/board steps will be skipped"
+  fi
 elif [ -x /opt/hermes/.venv/bin/hermes ]; then
   HERMES="/opt/hermes/.venv/bin/hermes"
 elif command -v hermes >/dev/null 2>&1; then
