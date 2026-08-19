@@ -203,6 +203,24 @@ ROOT_LIST_APPEND: dict[str, list[Any]] = {
 # ------------------------------------------------------------- PROFILE tiers
 # model.* is filled in per profile from PROFILE_MODELS at run time.
 PROFILE_ENFORCED_TEMPLATE = ("model.default", "model.provider")
+
+# Every NON-ROOT profile must never run the kanban dispatcher. The singleton
+# lock (<kanban_home>/kanban/.dispatcher.lock) is shared by every gateway on
+# the host, and whichever gateway process grabs it first becomes THE
+# dispatcher -- reading kanban.* from ITS OWN config.yaml. Observed 2026-08-19:
+# the engine-research profile gateway (auto-started by 02-reconcile-profiles,
+# no messaging platforms) won the race ~20s ahead of the root gateway, so the
+# root gateway logged "another gateway already holds the dispatcher lock;
+# this gateway will NOT dispatch" and the enforced topology above never
+# applied. Pinning dispatch_in_gateway=false on every profile makes the root
+# gateway (root config = the ROOT tiers above) the only candidate.
+PROFILE_NEVER_DISPATCH: dict[str, Any] = {"kanban.dispatch_in_gateway": False}
+
+# Pseudo-profile for "any other profile dir" (engine-research, claude, ...):
+# only the never-dispatch pin is enforced; model/skills/plugins are left
+# exactly as the operator has them.
+OTHER_PROFILE = "other"
+
 PROFILE_INSERT_ONLY: dict[str, Any] = {
     **GUARD_SETTINGS_INSERT_ONLY,
 }
@@ -439,12 +457,20 @@ def _normalise_bare_model(config: dict) -> None:
 
 
 def profile_enforced(profile: str) -> dict[str, Any]:
+    if profile == OTHER_PROFILE:
+        return dict(PROFILE_NEVER_DISPATCH)
     model, provider = PROFILE_MODELS[profile]
-    return dict(zip(PROFILE_ENFORCED_TEMPLATE, (model, provider)))
+    enforced = dict(zip(PROFILE_ENFORCED_TEMPLATE, (model, provider)))
+    enforced.update(PROFILE_NEVER_DISPATCH)
+    return enforced
 
 
 def patch_profile(config: dict, profile: str) -> PatchReport:
     report = PatchReport()
+    if profile == OTHER_PROFILE:
+        # Touch nothing but the dispatcher pin on profiles we do not own.
+        apply_tiers(config, report, enforced=profile_enforced(profile), insert_only={}, list_append={})
+        return report
     _normalise_bare_model(config)
     apply_tiers(
         config,
@@ -501,8 +527,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        metavar="|".join(PROFILE_MODELS),
-        help="profile name for --profile-config (default: inferred from the parent directory)",
+        metavar="|".join([*PROFILE_MODELS, OTHER_PROFILE]),
+        help=(
+            "profile name for --profile-config (default: inferred from the parent "
+            f"directory); '{OTHER_PROFILE}' = any profile we do not own: only "
+            "kanban.dispatch_in_gateway=false is enforced, nothing else is touched"
+        ),
     )
     return parser
 
@@ -523,11 +553,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.profile_config:
         path = Path(args.profile_config)
         profile = args.profile or _infer_profile(path)
-        if profile not in PROFILE_MODELS:
+        if profile not in PROFILE_MODELS and profile != OTHER_PROFILE:
             parser.print_usage(sys.stderr)
             _warn(
-                f"unknown profile {profile!r} (known: {', '.join(PROFILE_MODELS)}); "
-                "add it to PROFILE_MODELS in patch-config.py"
+                f"unknown profile {profile!r} (known: {', '.join(PROFILE_MODELS)}, "
+                f"or '{OTHER_PROFILE}' for a profile we do not own); add it to "
+                "PROFILE_MODELS in patch-config.py"
             )
             return 2
         label = f"profile {profile}"
