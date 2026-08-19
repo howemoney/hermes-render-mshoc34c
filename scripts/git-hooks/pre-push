@@ -1,0 +1,51 @@
+#!/bin/sh
+# Git pre-push hook: refuse any push that would update the remote's
+# `main` or `master` branch.
+#
+# Installed by the Dockerfile at /opt/render-tools/git-hooks/pre-push (0755)
+# and wired into the kanban anchor repo (/opt/data/work/stopsargassum) by the
+# 017-render-kanban-bootstrap cont-init hook via
+#   git config core.hooksPath /opt/render-tools/git-hooks
+# `core.hooksPath` lives in the anchor's shared .git/config, and every linked
+# worktree the dispatcher cuts under .worktrees/* resolves hooks through that
+# same config -- so one setting guards the anchor AND every worker checkout
+# without touching each worktree.
+#
+# Why: the SDLC contract is "workers push wt/<task-id>, open a PR, and the
+# reviewer squash-merges via `gh pr merge`". Observed 2026-08-18/19: the bot
+# was committing straight to origin/main (15-commit linear run, no PRs). The
+# repo is private on GitHub's free plan, so there is no branch protection
+# server-side -- this hook is the client-side stand-in.
+#
+# This is an ACCIDENT GUARD, not a security boundary. Anything that runs
+# `git push --no-verify`, unsets core.hooksPath, or talks to the GitHub API
+# directly bypasses it. The render-kanban-guard plugin's pre_tool_call hook
+# blocks those tool-level escapes for kanban workers; the health cron's
+# "direct pushes to main since cutover" check is the audit trail.
+#
+# Protocol (githooks(5)): git feeds one line per ref being pushed on stdin:
+#   <local ref> SP <local sha1> SP <remote ref> SP <remote sha1> LF
+# Remote name and URL arrive as $1 / $2 (unused here). Exit non-zero to abort
+# the whole push. Branch deletions arrive with an all-zero local sha and are
+# rejected too -- deleting remote main is no better than rewriting it.
+#
+# POSIX sh on purpose: the base image's /bin/sh is dash. No bashisms.
+
+set -u
+
+status=0
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  # Ignore blank lines defensively (git never sends them, but be safe).
+  [ -n "${remote_ref:-}" ] || continue
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master)
+      echo "pre-push: REFUSED update of ${remote_ref} (local ${local_ref:-?} -> ${local_sha:-?})." >&2
+      echo "pre-push: this checkout never pushes main/master directly." >&2
+      echo "pre-push: push a wt/<task-id> branch and open a PR; the reviewer squash-merges via 'gh pr merge'." >&2
+      echo "pre-push: (hook installed via core.hooksPath=/opt/render-tools/git-hooks by 017-render-kanban-bootstrap)" >&2
+      status=1
+      ;;
+  esac
+done
+
+exit "$status"

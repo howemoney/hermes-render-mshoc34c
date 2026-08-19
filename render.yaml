@@ -12,7 +12,7 @@
 # Inside the container the gateway runs in the foreground and the
 # dashboard runs as a background side-process (HERMES_DASHBOARD=1).
 # Render's public URL serves the dashboard on port 10000; persistent
-# state lives on a 5 GB disk mounted at /opt/data (HERMES_HOME default).
+# state lives on a 10 GB disk mounted at /opt/data (HERMES_HOME default).
 #
 # To upgrade Hermes: bump HERMES_IMAGE in the Dockerfile and redeploy.
 # To upgrade Render skills: bump RENDER_SKILLS_REF and redeploy.
@@ -22,11 +22,17 @@ services:
     name: hermes
     runtime: docker
     region: oregon
-    plan: standard
+    # Drift fix (2026-08-19): the live service was upgraded in the Render
+    # dashboard to `pro` (4 GiB) long ago and this file still said `standard`,
+    # so a Blueprint re-sync would have silently downgraded it. The kanban
+    # SDLC runs 1 coder + 1 reviewer worker at a time (kanban.max_in_progress
+    # 2 / per-profile 1) on top of the gateway + dashboard; `standard`
+    # (2 GiB) OOMs under that. Keep in step with the dashboard.
+    plan: pro
     # Render builds the image from this repo's Dockerfile on every deploy.
     # The Dockerfile FROMs the pinned upstream Hermes image, adds Render
-    # tooling + the skill bundle, and sets ENTRYPOINT to our bootstrap wrapper — so
-    # no `dockerCommand` override is needed here.
+    # tooling + the skill bundle, and inherits the upstream ENTRYPOINT
+    # dispatcher — so no `dockerCommand` override is needed here.
     dockerfilePath: ./Dockerfile
     autoDeployTrigger: off
     healthCheckPath: /api/status
@@ -34,7 +40,11 @@ services:
     disk:
       name: hermes-data
       mountPath: /opt/data
-      sizeGB: 5
+      # Same drift fix: the live disk was grown to 10 GB in the dashboard
+      # (worker worktrees under /opt/data/work/stopsargassum/.worktrees plus
+      # the shared npm cache at /opt/data/.npm-cache need the room). Render
+      # disks only grow, so declaring the smaller size here was a sync hazard.
+      sizeGB: 10
 
     envVars:
       # The Blueprint only carries vars that change how the container boots
@@ -130,4 +140,30 @@ services:
       # `render` CLI. This is the same kind of Render API key; the Render
       # account role behind the key determines what the agent can do.
       - key: RENDER_MCP_API_KEY
+        sync: false
+
+      # GitHub token for the kanban SDLC loop. Consumed by the baked `gh` CLI
+      # (non-interactive auth) and, through `credential.helper = !gh auth
+      # git-credential` on the anchor repo, by plain `git fetch/push` over
+      # https. Dispatcher-spawned workers inherit the gateway's environment,
+      # so one value here reaches the `coder` and `reviewer` profiles without
+      # touching any per-profile .env.
+      #
+      # Use a FINE-GRAINED PAT scoped to howemoney/stopsargassum only:
+      #   Contents: read+write   (fetch base, push wt/<task-id> branches,
+      #                           squash-merge into main)
+      #   Pull requests: read+write (gh pr create / checks / merge)
+      #   Checks: read, Actions: read (gh pr checks --watch, gh run view)
+      # Nothing org-wide, no admin scopes. Paste the value in the Render
+      # Environment tab; rotate there + restart, no rebuild needed.
+      #
+      # Deliberately `GH_TOKEN`, not `GITHUB_TOKEN`: `gh` reads GH_TOKEN first,
+      # and GITHUB_TOKEN is the name upstream Hermes reserves for its skills-hub
+      # / general GitHub token (hermes .env.example "SKILLS HUB" section), so
+      # the workers' write-capable SDLC credential stays a separate, narrower
+      # secret. Do NOT add HERMES_KANBAN_DISPATCH_IN_GATEWAY here: it is only an
+      # escape hatch that can DISABLE the in-gateway dispatcher
+      # (gateway/kanban_watchers.py:1209-1212); enabling lives in config.yaml
+      # kanban.dispatch_in_gateway, which patch-config.py enforces every boot.
+      - key: GH_TOKEN
         sync: false

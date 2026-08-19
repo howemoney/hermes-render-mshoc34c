@@ -16,7 +16,7 @@ The Hermes release and the skills commit are both pinned in the `Dockerfile` for
 
 ```
                             ┌──────────────────────────────────────────────┐
-                            │ Render web service (Docker, plan: standard)  │
+                            │ Render web service (Docker, plan: pro)       │
                             │                                              │
    you / external clients   │  ┌────────────────────────────────────────┐  │
    ─────────HTTPS──────────►│  │  hermes dashboard (port 10000)         │  │
@@ -34,7 +34,7 @@ The Hermes release and the skills commit are both pinned in the `Dockerfile` for
                             │                  │                           │
                             │                  ▼                           │
                             │  ┌────────────────────────────────────────┐  │
-                            │  │  /opt/data (persistent disk, 5 GB)     │  │
+                            │  │  /opt/data (persistent disk, 10 GB)    │  │
                             │  │  .env, config.yaml, sessions/,         │  │
                             │  │  skills/, memories/, logs/             │  │
                             │  └────────────────────────────────────────┘  │
@@ -73,7 +73,24 @@ skills:
     - /opt/render-tools/skills-upstream
 ```
 
-The patcher is **insert-only**: it never overwrites edits you make from the dashboard. The `${RENDER_MCP_API_KEY}` placeholder is resolved lazily at gateway startup, so you can rotate the key from Render's **Environment** tab without rebuilding the image — just restart the service.
+Those two entries are **insert-only**: the patcher never overwrites edits you make from the dashboard. The `${RENDER_MCP_API_KEY}` placeholder is resolved lazily at gateway startup, so you can rotate the key from Render's **Environment** tab without rebuilding the image — just restart the service.
+
+The overlay skills under `skills/` use names that do not exist upstream (`render-on-hermes`, `kanban-sdlc-worker`, `kanban-sdlc-reviewer`). That is deliberate: two skills with the same name on different `external_dirs` make `skill_view` refuse the ambiguity rather than pick a winner, so an overlay never "shadows" an upstream skill — it composes with it under its own name.
+
+### Kanban SDLC (coder → reviewer → squash-merge)
+
+The same image also turns the Hermes kanban board into a closed-loop SDLC for `howemoney/stopsargassum`. Everything lives in this repo; nothing is hand-configured on the box except the secrets:
+
+| Piece | Path in container | Source | What it does |
+|---|---|---|---|
+| Config patcher (extended) | `/opt/render-tools/patch-config.py` | [`scripts/patch-config.py`](scripts/patch-config.py) | Adds the `kanban.*` topology, the `auxiliary.*` model picks, and the guard plugin to `/opt/data/config.yaml`; `--profile-config` does the same for the `coder` / `reviewer` profile configs. Two tiers: **insert-only** (yours wins) and **enforced** (`kanban.dispatch_in_gateway`, `orchestrator_profile`, `default_assignee`, `max_in_progress`, `max_in_progress_per_profile`, `auto_decompose`, and `model.default`/`model.provider` on the two profiles — rewritten every boot and logged as `enforced k (old -> new)` so a dashboard edit to one of them is visibly reverted). |
+| Boot hook 017 | `/etc/cont-init.d/017-render-kanban-bootstrap` | [`scripts/cont-init-kanban-bootstrap.sh`](scripts/cont-init-kanban-bootstrap.sh) | Creates the `coder` and `reviewer` profiles (+ role `SOUL.md`, descriptions), patches their configs, sets the board's default workdir to `/opt/data/work/stopsargassum`, points that anchor repo at our git hooks, fast-forwards its `main` when clean, and copies the health probe into `/opt/data/scripts/`. Every step is `\|\| true`; it never blocks boot. |
+| Guard plugin | `/opt/hermes/plugins/render-kanban-guard/` | [`plugins/render-kanban-guard/`](plugins/render-kanban-guard) | Opt-in via `plugins.enabled`. Fast-forwards the anchor repo right before the dispatcher cuts a worktree; blocks `git push … main`, `--force`, `--no-verify`, and (for workers) `gh pr merge` at the tool layer; injects a short role section into the system prompt of kanban runs so dashboard-created cards still find the right skill. |
+| Git pre-push hook | `/opt/render-tools/git-hooks/pre-push` | [`scripts/git-hooks/pre-push`](scripts/git-hooks/pre-push) | Refuses any push to `main`/`master`; inherited by every `.worktrees/*` via `core.hooksPath` on the anchor. **An accident guard, not a security boundary** (`--no-verify` bypasses it; the plugin blocks `--no-verify`, but a determined agent can still script around both). Real protection is GitHub branch protection, which this repo does not have yet. |
+| House skills | `/opt/render-tools/skills-local/` | [`skills/kanban-sdlc-worker`](skills/kanban-sdlc-worker), [`skills/kanban-sdlc-reviewer`](skills/kanban-sdlc-reviewer) | The worker protocol (sync, gate, commit, push `wt/<id>`, open PR, `kanban_request_review(reviewer="reviewer")`) and the reviewer protocol (gate, CI wait, `gh pr merge --squash --delete-branch --match-head-commit`, `kanban_complete`). The reviewer skill composes with upstream `sdlc-review`, which the dispatcher force-loads on every review run. |
+| Health probe | `/opt/data/scripts/kanban-health.py` | [`scripts/kanban-health.py`](scripts/kanban-health.py) | Zero-LLM `no_agent` cron: `hermes cron create "every 3h" --no-agent --script kanban-health.py --name kanban-health --deliver telegram`. Prints only when something is new (stranded/zombie cards, dispatcher not ticking, stale review, silent worker, red CI/Deploy on main, done digest). `--dry-run` to preview, `--auto-escalate` to pin stuck coder cards to `openai/gpt-5.6-sol`. |
+
+Roles are fixed: `default` orchestrates (decompose/triage, `openai/gpt-5.6-sol`), `coder` implements (`deepseek/deepseek-v4-pro-0813` via OpenRouter, `kanban.default_assignee`), `reviewer` merges (`openai/gpt-5.6-sol`; `max_in_progress_per_profile: 1` serialises merges). Workers need `GH_TOKEN` in the Render **Environment** tab (a fine-grained PAT on `stopsargassum`: contents RW, pull requests RW, checks/actions read). Holds are `hermes pause` / `hermes resume` — nothing else.
 
 > **Why `RENDER_MCP_API_KEY` and not `RENDER_API_KEY`?** The standard name is what the `render` CLI looks for. We deliberately don't ship the CLI in this image (see **Security: agent capabilities**). This is still a normal Render API key with the permissions of the user who created it. The nonstandard env var name avoids accidental CLI auto-auth if you later install the CLI manually. Name your CLI key separately.
 
@@ -189,11 +206,11 @@ Costs assume Render's published prices in May 2026 and don't include data egress
 
 | Component                     | Plan                              | Cost            |
 |-------------------------------|-----------------------------------|-----------------|
-| Web service (`runtime: image`) | `standard` (2 GB / 1 CPU)         | $25/month       |
-| Persistent disk (`/opt/data`)  | 5 GB SSD                          | $1.25/month     |
-| **Subtotal (this template)**   |                                   | **$26.25/month**|
+| Web service (`runtime: image`) | `pro` (4 GB / 2 CPU) — `render.yaml` since the kanban SDLC (1 coder + 1 reviewer worker on top of gateway + dashboard); `standard` (2 GB, $25/month) is enough without it | $85/month |
+| Persistent disk (`/opt/data`)  | 10 GB SSD (anchor repo + `.worktrees/` + npm cache live here) | $2.50/month |
+| **Subtotal (this template)**   |                                   | **$87.50/month**|
 
-If you do a lot of Playwright browsing or run several subagents in parallel, bump the plan to `pro` (4 GB / 2 CPU, $85/month). The starter plan (512 MB) cannot hold the Hermes image and is not supported.
+`pro` is what the kanban concurrency caps (`max_in_progress: 2`, per-profile 1) were sized for; measure memory on Render before raising them. The starter plan (512 MB) cannot hold the Hermes image and is not supported.
 
 LLM costs are separate and depend entirely on your provider and usage. OpenRouter and Anthropic both report usage in their respective dashboards; Hermes also surfaces per-model usage on its **Analytics** page.
 
@@ -266,6 +283,14 @@ Check the **Events** tab for the deploy that failed, then the **Logs** tab aroun
 | Agent says it tried to run `render <something>` and got `command not found` | Working as designed — the Render CLI is not installed in this image (see **Security: agent capabilities**). Most CLI capabilities have an MCP equivalent the agent should use instead; the rest (live log streaming, `render psql`, SSH) the user runs from their own machine. |
 | `[render-tools] config patch failed; continuing` in the boot logs | Non-fatal. The agent still runs; you just won't see the Render MCP server until you fix it. Usually means `/opt/data/config.yaml` isn't valid YAML — fix it from the dashboard or wipe it (see "Forcing a clean rebuild"). |
 | `tirith security scanner enabled but not available`  | Harmless. Tirith is an optional Rust-based command scanner; without it, Hermes uses pattern matching. Ignore unless you specifically want native scanning. |
+| `[render-tools] kanban-bootstrap: warning: …` in the boot logs | Non-fatal by design — every 017 step is `\|\| true`. Common ones: `profile create 'coder' failed or timed out` (re-runs repair it next boot; `hermes -p coder update` re-seeds bundled skills), `anchor … is dirty or mid-merge/rebase; NOT syncing main` (someone left uncommitted work in `/opt/data/work/stopsargassum` — clean it by hand, the hook never resets a dirty tree), `anchor fetch failed or timed out` (no `GH_TOKEN`, or the anchor remote is SSH without a key — `git -C /opt/data/work/stopsargassum remote get-url origin`). |
+| Cards sit in `ready` forever; `hermes kanban diagnostics` says `stranded_in_ready`; health cron says "is the in-gateway dispatcher ticking?" | No live dispatcher. Check the gateway log for `kanban dispatcher: holding singleton dispatcher lock` and `embedded in gateway`. If absent: `hermes config get kanban.dispatch_in_gateway` must be `true` (enforced every boot by the patcher — if it is `false`, someone set `HERMES_KANBAN_DISPATCH_IN_GATEWAY` in the Render env; remove it, it is disable-only), then **Restart gateway**. `hermes kanban dispatch --dry-run --json` shows what would be picked up. |
+| Two dispatchers: cards get claimed twice, or `kanban daemon` in `pgrep -af kanban` | A standalone `hermes kanban daemon` is running next to the in-gateway one (pre-cutover leftover, or a cron/skill restarts it). `kill` it, `pgrep -af "kanban daemon"` must be empty, and grep `hermes cron list` + skills for `kanban daemon`. The singleton flock (`/opt/data/kanban/.dispatcher.lock`) makes the loser log `another dispatcher holds the lock`, so this is usually noisy rather than corrupting — but only one of them carries our `render-kanban-guard` hooks. |
+| Zombie cards: `running` with no heartbeat for > 90 min, or `protocol violation … exited without kanban_complete/kanban_block` | The worker process died or the model printed a summary and stopped. Upstream's `dispatch_stale_timeout_seconds` (4 h, insert-only) and `reconcile_orphans` reap them into `blocked`/retry; the health cron flags them earlier. `hermes kanban show <id>` + `hermes kanban log <id>` for the last run; `hermes kanban set-model <id> openai/gpt-5.6-sol --provider openrouter` to pin a stronger model (`kanban-health.py --auto-escalate` does exactly this). Never `kanban complete` a card by hand unless the work really landed on `origin/main`. |
+| Cards blocked with "HOLD ENFORCED" / "HOLD" text in the reason | A pre-cutover watcher wrote them; there is no HOLD mechanism any more. The only hold is `hermes pause --reason "…"` / `hermes resume` (the `ESTOP` sentinel, which the health cron reports when older than 6 h). `hermes kanban unblock <id>` or `hermes kanban schedule <id> …` — never delete. |
+| A human pushed straight to `main` / bot branch protection | There is **no GitHub branch protection** on `stopsargassum`. The pre-push hook + plugin only stop the agents' *accidental* pushes; anyone with the token can still push `main`. Audit: `git log --since=<cutover> --format='%ce %s' origin/main \| grep -v noreply@github.com` should be empty (squash-merges are authored by GitHub). Enabling branch protection + "require PR" on GitHub is the real fix and is a follow-up. |
+| Reviewer merged but the remote `wt/<id>` branch is still there, or the worktree under `.worktrees/` never disappears | `gh pr merge --delete-branch` run *inside* the linked worktree without `-R <repo>` tries `git checkout main` (fails: `main` is checked out in the anchor) and exits before the remote delete. The reviewer skill always passes `-R howemoney/stopsargassum`. A leftover worktree whose branch is merged: `git -C /opt/data/work/stopsargassum worktree remove .worktrees/<id>` then `git worktree prune`. Never `git fetch --prune` between a branch delete and the card's `kanban_complete` — upstream's cleanup reads `refs/remotes/origin/wt/<id>` to decide whether commits are pushed. |
+| Rolling back the SDLC layer | Three independent levers, none touch the disk: (1) Render **Rollback** to the previous deploy (image swap; `/opt/data` untouched, but the enforced config keys stay whatever the last boot wrote — set `kanban.dispatch_in_gateway: false` from the dashboard if you also want the dispatcher off); (2) `hermes pause --reason "…"` stops all dispatch immediately without any redeploy; (3) add `render-kanban-guard` to `plugins.disabled` (root and `-p coder` / `-p reviewer`) — upstream skips a plugin named there even when it is also in `plugins.enabled` (`hermes_cli/plugins.py:3893-3911`), and the patcher only ever appends to `enabled`, so this survives reboots; removing it from `enabled` does not (the next boot re-appends it). |
 
 ### Changing env vars
 
