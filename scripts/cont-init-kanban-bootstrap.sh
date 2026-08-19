@@ -226,6 +226,34 @@ EOF
 done
 
 # ---------------------------------------------------------------------------
+# (a2) every OTHER profile must never run the kanban dispatcher
+# ---------------------------------------------------------------------------
+# The dispatcher singleton lock (<kanban_home>/kanban/.dispatcher.lock) is
+# shared by every gateway process on this host, and 02-reconcile-profiles
+# auto-starts a gateway for every profile whose last state was "running".
+# Whichever gateway wins that lock becomes THE dispatcher and reads kanban.*
+# from ITS OWN config.yaml -- not the root config the 016 patcher enforces.
+# Observed 2026-08-19: the engine-research profile gateway (no messaging
+# platforms, started ~20 s before the root gateway) took the lock and the
+# root gateway logged "another gateway already holds the dispatcher lock;
+# this gateway will NOT dispatch". Pin dispatch_in_gateway=false on every
+# profile we do not own (patch-config's 'other' mode touches nothing else),
+# so only the root gateway is ever a candidate. coder/reviewer got the same
+# pin in the loop above.
+if [ -x "${PATCHER}" ] && [ -d "${DATA_DIR}/profiles" ]; then
+  for pdir in "${DATA_DIR}"/profiles/*/; do
+    [ -d "${pdir}" ] || continue
+    P="$(basename "${pdir}")"
+    case "${P}" in
+      coder|reviewer) continue ;;
+    esac
+    if ! timeout 30 ${DROP} "${PATCHER}" --profile-config "${pdir%/}/config.yaml" --profile other; then
+      warn "could not pin dispatch_in_gateway=false for profile '${P}' (it may still compete for the dispatcher lock)"
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # (b) profile descriptions (decomposer roster)
 # ---------------------------------------------------------------------------
 # `hermes profile describe NAME` prints the description; `--text` overwrites

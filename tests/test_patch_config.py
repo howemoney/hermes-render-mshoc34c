@@ -174,8 +174,34 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(self.pc.PROFILE_MODELS["reviewer"], ("openai/gpt-5.6-sol", "openrouter"))
         self.assertEqual(
             self.pc.profile_enforced("reviewer"),
-            {"model.default": "openai/gpt-5.6-sol", "model.provider": "openrouter"},
+            {
+                "model.default": "openai/gpt-5.6-sol",
+                "model.provider": "openrouter",
+                # Every non-root profile is pinned to never run the dispatcher.
+                "kanban.dispatch_in_gateway": False,
+            },
         )
+
+    def test_other_profile_mode_only_pins_dispatcher(self):
+        # 'other' = a profile we do not own (engine-research, claude, ...):
+        # only kanban.dispatch_in_gateway=false is enforced; model, skills,
+        # plugins and anything else the operator set are left alone.
+        self.assertEqual(self.pc.profile_enforced("other"), {"kanban.dispatch_in_gateway": False})
+        cfg = {
+            "model": {"default": "x/y", "provider": "p"},
+            "kanban": {"dispatch_in_gateway": True, "max_in_progress": 7},
+            "mcp_servers": {"foo": {}},
+            "plugins": {"enabled": ["something"]},
+        }
+        report = self.pc.patch_profile(cfg, "other")
+        self.assertTrue(report.changed)
+        self.assertFalse(cfg["kanban"]["dispatch_in_gateway"])
+        self.assertEqual(cfg["kanban"]["max_in_progress"], 7)
+        self.assertEqual(cfg["model"], {"default": "x/y", "provider": "p"})
+        self.assertEqual(cfg["mcp_servers"], {"foo": {}})
+        self.assertEqual(cfg["plugins"], {"enabled": ["something"]})
+        # Second pass is a no-op.
+        self.assertFalse(self.pc.patch_profile(cfg, "other").changed)
 
     def test_patch_root_dict_semantics(self):
         cfg = {
