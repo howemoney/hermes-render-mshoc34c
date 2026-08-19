@@ -67,6 +67,15 @@ RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache 'fal-client=
 # /usr/local/bin is root-owned, so the symlink fails with EACCES and `sudo` is
 # not installed. Creating it here, as root at build time, persists across
 # redeploys.
+#
+# As of v2026.8.18 this is belt-and-braces rather than load-bearing: upstream
+# now exports PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:..." image-wide
+# (hermes-v818/Dockerfile:420) with a privilege-drop shim at
+# /opt/hermes/bin/hermes, and the dispatcher's `_resolve_hermes_argv`
+# (hermes_cli/kanban_db.py:10578-10616) falls back to
+# `sys.executable -m hermes_cli.main` when no `hermes` is on PATH at all. The
+# symlink stays so `docker exec` / cron / any PATH-stripped child still
+# resolves a bare `hermes` the same way it did on v2026.8.3.
 RUN ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
  && /usr/local/bin/hermes --version >/dev/null
 
@@ -203,6 +212,44 @@ RUN python3 /opt/render-tools/patch-chat-attachments.py /opt/hermes \
 COPY --chown=root:root scripts/patch-config.py /opt/render-tools/patch-config.py
 COPY --chmod=0755 scripts/cont-init-patch-config.sh /etc/cont-init.d/016-render-patch-config
 RUN chmod 0755 /opt/render-tools/patch-config.py
+
+# Kanban SDLC infrastructure (coder -> PR -> reviewer -> squash-merge):
+#
+#   - plugins/render-kanban-guard/ -> /opt/hermes/plugins/ (the bundled-source
+#     plugin root: hermes_cli/plugins.py:76-86 get_bundled_plugins_dir() =
+#     <repo>/plugins unless HERMES_BUNDLED_PLUGINS overrides it). Bundled, not
+#     under /opt/data/plugins, so the in-gateway dispatcher AND every
+#     dispatcher-spawned worker (each with its own HERMES_HOME under
+#     /opt/data/profiles/<name>) resolve the same copy; it is still opt-in
+#     per profile via plugins.enabled (patch-config.py writes that).
+#   - scripts/git-hooks/pre-push -> /opt/render-tools/git-hooks/ (0755). The
+#     017 hook points the anchor repo's core.hooksPath here, which every
+#     .worktrees/* checkout inherits. Accident guard, not a security boundary.
+#   - scripts/kanban-health.py -> /opt/render-tools/scripts/ (read-only image
+#     copy; 017 installs it into /opt/data/scripts once, where `hermes cron
+#     --script` can see it, and never overwrites operator edits).
+#   - 017-render-kanban-bootstrap: numbered after 016 (root config patched
+#     first) and before upstream 02-reconcile-profiles (which walks
+#     /opt/data/profiles/* to recreate s6 gateway slots), so the coder /
+#     reviewer profiles exist before anything enumerates them. Every step in
+#     it is `|| true`; it never fails the boot.
+#
+# The trailing RUN re-asserts perms (COPY --chmod covers the files, install -d
+# the dirs) and fails the BUILD -- not the boot -- on a syntax error in either
+# shell script or the health probe, mirroring the ast.parse checks above.
+RUN install -d -o root -g root -m 0755 /opt/render-tools/git-hooks /opt/render-tools/scripts
+COPY --chown=root:root plugins/render-kanban-guard/ /opt/hermes/plugins/render-kanban-guard/
+COPY --chmod=0755 scripts/git-hooks/pre-push /opt/render-tools/git-hooks/pre-push
+COPY --chmod=0755 scripts/kanban-health.py /opt/render-tools/scripts/kanban-health.py
+COPY --chmod=0755 scripts/cont-init-kanban-bootstrap.sh /etc/cont-init.d/017-render-kanban-bootstrap
+RUN chmod 0755 /opt/render-tools/git-hooks /opt/render-tools/scripts \
+      /opt/render-tools/git-hooks/pre-push /opt/render-tools/scripts/kanban-health.py \
+      /etc/cont-init.d/017-render-kanban-bootstrap \
+ && chmod -R a+rX /opt/hermes/plugins/render-kanban-guard \
+ && sh -n /etc/cont-init.d/017-render-kanban-bootstrap \
+ && sh -n /opt/render-tools/git-hooks/pre-push \
+ && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/render-tools/scripts/kanban-health.py').read_text())" \
+ && test -f /opt/hermes/plugins/render-kanban-guard/plugin.yaml
 
 # Pre-create the dir the patcher writes to so chown works cleanly on
 # first boot. The mounted disk replaces this empty dir at runtime;

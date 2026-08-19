@@ -1,0 +1,79 @@
+# render-kanban-guard — Howe Agency SDLC guard rails for Hermes Kanban on Render.
+#
+# Installed by the Dockerfile as a BUNDLED plugin:
+#   COPY plugins/render-kanban-guard/ /opt/hermes/plugins/render-kanban-guard/
+# Bundled plugins are discovered from <hermes>/plugins/<name>/ (the scanner in
+# hermes_cli/plugins.py:4063 `get_bundled_plugins_dir()`), but a bundled
+# `kind: standalone` plugin is still OPT-IN: it only loads when
+# `plugins.enabled` lists it (plugins.py:3967-3984). patch-config.py appends
+# it to the root config AND to every kanban profile config (coder, reviewer),
+# because the dispatcher (gateway) and each worker subprocess run in different
+# HERMES_HOMEs and each discovers/loads plugins on its own.
+#
+# Manifest field reference (hermes_cli/plugins.py v2026.8.18):
+#   - known fields:      _KNOWN_MANIFEST_FIELDS, plugins.py:653-662
+#   - kind values:       _VALID_PLUGIN_KINDS, plugins.py:620
+#                        ("standalone" = own hooks/tools, opt-in via plugins.enabled)
+#                        Set explicitly so the source-marker auto-detect
+#                        (plugins.py:4301-4320) never runs on this file.
+#   - hooks:             informational list (bundled plugins use it; see
+#                        plugins/security-guidance/plugin.yaml). Only
+#                        `provides_hooks` is read into PluginManifest
+#                        (plugins.py:4337); both keys are "known" so neither
+#                        warns. We list both so `hermes plugins list` and a
+#                        human reading this file agree.
+#   - config_schema:     mapping key -> {type, default, description, required}
+#                        (plugins.py:766-789). Mismatches only WARN (:4685).
+#                        Settings are read by ctx.get_config(<key>) from
+#                        plugins.entries.render-kanban-guard.settings.<key>
+#                        (plugins.py:1422-1448).
+#   - manifest_version:  2 (plugins.py:690-707). With mv>=2 any UNKNOWN field
+#                        logs a warning instead of a debug line (:802-809), so
+#                        every key below is in _KNOWN_MANIFEST_FIELDS on purpose.
+name: render-kanban-guard
+version: "0.1.0"
+manifest_version: 2
+kind: standalone
+description: >-
+  Keeps the Howe Agency kanban SDLC honest. In the dispatcher it fast-forwards
+  the anchor repo's local main to origin/main right after a task is claimed
+  (so new worktrees are cut from fresh main); in every kanban worker it blocks
+  terminal/execute_code commands that push to main/master, use --no-verify or
+  --force, or (for worker profiles) merge a PR; and it injects a short
+  per-role system-prompt section that points the worker/reviewer at the right
+  house skill and states the mandatory terminal-action contract.
+author: "Howe Agency"
+license: MIT
+tags: [kanban, sdlc, git, guard]
+hooks:
+  - kanban_task_claimed
+  - pre_tool_call
+provides_hooks:
+  - kanban_task_claimed
+  - pre_tool_call
+config_schema:
+  anchor_repos:
+    type: list
+    default: ["/opt/data/work/stopsargassum"]
+    description: >-
+      Absolute paths of the anchor git checkouts whose local `main` is
+      fast-forwarded to origin/main on every kanban_task_claimed. Pushes
+      issued with `git -C <anchor> push` are blocked in workers.
+  worker_profiles:
+    type: list
+    default: ["coder"]
+    description: >-
+      Profile names that implement cards. They additionally may not run
+      `gh pr merge` or call the GitHub merge API; they hand off with
+      kanban_request_review(reviewer="reviewer").
+  reviewer_profiles:
+    type: list
+    default: ["reviewer"]
+    description: >-
+      Profile names that review + squash-merge. Push-to-main / --force /
+      --no-verify are still blocked for them; merging via `gh pr merge` is
+      allowed.
+  protected_branches:
+    type: list
+    default: ["main", "master"]
+    description: Remote branch names that no kanban worker may push to.
