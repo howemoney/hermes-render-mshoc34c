@@ -189,6 +189,11 @@ COPY --chown=hermes:hermes skills/ /opt/render-tools/skills-local/
 COPY --chown=root:root scripts/patch-files-page.py /opt/render-tools/patch-files-page.py
 RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_server.py \
  && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text())"
+# Vision never-fail-silent: upstream Hermes v2026.8.18 (v0.20.4) already
+# eliminated this problem by replacing _enrich_with_attached_images with
+# _build_image_ref_message (tui_gateway/server.py:7173), which no longer
+# pre-analyzes images at all — the agent examines them via vision_analyze
+# in-loop. No patch needed.
 
 # Fix gated-mode upload authentication and add unified Chat attachments.
 # The patch adds a general document-cache endpoint, a paperclip/file picker,
