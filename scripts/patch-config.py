@@ -135,6 +135,31 @@ RENDER_SKILL_DIRS = (
 )
 RENDER_SKILLS_LOCAL = RENDER_SKILL_DIRS[0]
 RENDER_MCP_URL = "https://mcp.render.com/mcp"
+
+# GitHub MCP server for the worker profiles.
+#
+# Kanban workers run inside the agent sandbox, where credential-shaped env
+# vars (the ``_TOKEN``/``_API_KEY``/``_SECRET``/``_KEY`` suffixes in
+# hermes_cli/env_loader.py:20) are NOT visible to tool subprocesses -- that is
+# what agent/secret_scope.py and the git-credential-hermes-gateway broker
+# exist for. Consequence, observed live on 2026-08-19: `git push` succeeds
+# (the broker answers for it) but `gh` reports "You are not logged into any
+# GitHub hosts", so a reviewer could not run `gh pr checks` or squash-merge,
+# even though the container itself has a valid GITHUB_TOKEN and `gh` works
+# fine from a Render shell.
+#
+# The MCP server is the sanctioned path: it is launched by the worker process
+# (which does inherit the gateway env) rather than by the sandboxed terminal
+# tool, so it can authenticate. The `default` profile already had it; the
+# worker/reviewer profiles were created without any mcp_servers, which left
+# them with no way to open, inspect or merge a PR at all.
+#
+# Binary is baked at /usr/local/bin/github-mcp-server (see the Dockerfile);
+# the token is resolved lazily from the env at gateway startup, exactly like
+# ${RENDER_MCP_API_KEY} above -- no secret is ever written into config.yaml.
+GITHUB_MCP_COMMAND = "/usr/local/bin/github-mcp-server"
+GITHUB_MCP_ARGS = ["stdio"]
+GITHUB_MCP_TOKEN_ENV = "${GITHUB_TOKEN}"
 RENDER_MCP_AUTH = "Bearer ${RENDER_MCP_API_KEY}"
 
 # The guard plugin (plugins/render-kanban-guard) is bundled into the image at
@@ -223,6 +248,10 @@ OTHER_PROFILE = "other"
 
 PROFILE_INSERT_ONLY: dict[str, Any] = {
     **GUARD_SETTINGS_INSERT_ONLY,
+    # Without this a worker has no authenticated GitHub path at all.
+    "mcp_servers.github.command": GITHUB_MCP_COMMAND,
+    "mcp_servers.github.args": list(GITHUB_MCP_ARGS),
+    "mcp_servers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN": GITHUB_MCP_TOKEN_ENV,
 }
 PROFILE_LIST_APPEND: dict[str, list[Any]] = {
     "skills.external_dirs": [RENDER_SKILLS_LOCAL],
