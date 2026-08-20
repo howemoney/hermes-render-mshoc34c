@@ -182,6 +182,29 @@ class HelperTests(unittest.TestCase):
             },
         )
 
+    def test_worker_profiles_get_the_github_mcp_server(self):
+        # Workers run in the agent sandbox, where credential-shaped env vars
+        # are invisible to tool subprocesses, so `gh` cannot authenticate.
+        # The MCP server is launched by the worker process itself and is the
+        # only authenticated GitHub path a worker/reviewer has. Regression
+        # guard for the 2026-08-19 reviewer "no authenticated gh session".
+        for profile in ("coder", "reviewer"):
+            cfg = {}
+            self.pc.patch_profile(cfg, profile)
+            gh = cfg["mcp_servers"]["github"]
+            self.assertEqual(gh["command"], "/usr/local/bin/github-mcp-server")
+            self.assertEqual(gh["args"], ["stdio"])
+            # Lazily-resolved env reference, never a literal secret.
+            self.assertEqual(gh["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "${GITHUB_TOKEN}")
+        # Insert-only: an operator's own entry survives.
+        mine = {"mcp_servers": {"github": {"command": "/custom/gh-mcp"}}}
+        self.pc.patch_profile(mine, "coder")
+        self.assertEqual(mine["mcp_servers"]["github"]["command"], "/custom/gh-mcp")
+        # 'other' profiles are not given an MCP server.
+        other = {}
+        self.pc.patch_profile(other, "other")
+        self.assertNotIn("mcp_servers", other)
+
     def test_other_profile_mode_only_pins_dispatcher(self):
         # 'other' = a profile we do not own (engine-research, claude, ...):
         # only kanban.dispatch_in_gateway=false is enforced; model, skills,

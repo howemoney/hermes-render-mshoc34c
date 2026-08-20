@@ -53,6 +53,30 @@ Your workspace is the **implementer's worktree** on the implementer's
 `wt/<id>` branch (same `workspace_path`, same branch — upstream reuses it).
 Treat it as read-mostly: fetch/merge/update-branch are fine, edits are not.
 
+## GitHub access: use the MCP tools, not `gh`
+
+**`gh` is NOT authenticated inside your sandbox and cannot be made so.**
+Hermes hides credential-shaped env vars (`*_TOKEN`, `*_API_KEY`, `*_SECRET`,
+`*_KEY`) from tool subprocesses, so `gh auth status` reports *"You are not
+logged into any GitHub hosts"* even though the container itself holds a valid
+`GITHUB_TOKEN`. Do not try to work around this: do not read the token out of
+a credential helper, a config file, `/proc`, or the environment, and never
+paste a token into a command.
+
+Use these instead:
+
+| Need | Use |
+|---|---|
+| push your branch | plain `git push` — the `git-credential-hermes-gateway` helper answers for it |
+| open / update a PR | the **`github` MCP tools** (`create_pull_request`, `update_pull_request`, …) |
+| read PR state, checks, CI logs | the **`github` MCP tools** (`get_pull_request`, `get_pull_request_status`, `list_workflow_runs`, `get_job_logs`) |
+| merge a PR | the **`github` MCP tool** `merge_pull_request` with `merge_method: "squash"` |
+
+If the `github` MCP tools are not in your tool list, stop and
+`kanban_block(kind="capability", reason="github MCP server not available to
+this profile; gh is sandboxed — cannot open/inspect/merge a PR")`. That is a
+real infrastructure gap, not something to improvise around.
+
 ## Procedure
 
 ### 1. Orient
