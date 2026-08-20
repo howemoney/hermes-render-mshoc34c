@@ -24,11 +24,13 @@
 #       dashboard-created cards inherit the anchor repo (board metadata, NOT
 #       config.yaml -- kanban_db.py:871-908 write_board_metadata).
 #   (d) the anchor repo: core.hooksPath -> our pre-push guard, a git identity,
-#       `gh` as the https credential helper, and -- only when the checkout is
-#       clean and idle -- fast-forward local main to origin/main. The
-#       dispatcher cuts worker worktrees from the anchor's LOCAL HEAD without
-#       fetching (kanban_db.py _ensure_git_worktree), so a stale anchor means
-#       every worker starts on an old base. No `--prune`: pruning origin/wt/*
+#       and `gh` as the https credential helper. The boot-time `git fetch` +
+#       fast-forward that used to be here has been REMOVED: it ran before the
+#       gateway's credential broker was available, so it could never authenticate
+#       and only produced a misleading warning. The authenticated anchor sync is
+#       now performed exclusively by the render-kanban-guard plugin's
+#       kanban_task_claimed hook, which runs inside the live gateway immediately
+#       before each worktree is cut. No `--prune`: pruning origin/wt/*
 #       between the reviewer's branch delete and kanban_complete makes
 #       upstream's worktree cleanup think commits are unpushed and leak the
 #       worktree.
@@ -48,9 +50,10 @@
 #     /opt/data ends up root-owned and unreadable to the gateway (uid 10000).
 #   - NEVER fails the boot: set -eu guards our own typos, every step is
 #     `|| true` with a "[render-tools]" log line, and the script exits 0.
-#   - Bounded: every network / CLI step is wrapped in `timeout` (coreutils,
-#     Essential on the debian:13.4 base -- hermes-v818/Dockerfile:61). Steady
-#     state is one `git fetch` (<=45 s); first boot adds two profile creates.
+#   - Bounded: every CLI step is wrapped in `timeout` (coreutils,
+#     Essential on the debian:13.4 base -- hermes-v818/Dockerfile:61). No
+#     network calls remain at boot time; the anchor fetch was moved to the
+#     claim-time plugin. First boot adds two profile creates (<=40 s each).
 #   - Idempotent: every write is guarded by a "missing / unset / clean" check,
 #     so rebooting N times produces the same disk state as booting once.
 #   - No secrets printed: GH_TOKEN is only ever consumed by `gh`, never echoed.
@@ -338,8 +341,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# (d) anchor repo: hooks, identity, credentials, fast-forward
+# (d) anchor repo: hooks, identity, credentials
 # ---------------------------------------------------------------------------
+# NOTE: the boot-time `git fetch origin main` + `git checkout -B main` that
+# used to live here has been REMOVED. It ran during cont-init, before the
+# Hermes gateway (and therefore git-credential-hermes-gateway) was available,
+# so the fetch could never authenticate and always emitted a misleading
+# "anchor fetch failed or timed out (offline / GH_TOKEN?)" warning. The
+# authenticated anchor sync is now performed exclusively by the
+# render-kanban-guard plugin's `kanban_task_claimed` hook
+# (plugins/render-kanban-guard/__init__.py:sync_anchor), which runs inside
+# the live gateway immediately before each worktree is cut. That is the
+# correct timing boundary: the gateway has credentials, the fetch is real,
+# and no boot delay or warning noise is produced.
 if [ -e "${ANCHOR}/.git" ] && command -v git >/dev/null 2>&1; then
   g() { as_hermes git -C "${ANCHOR}" "$@"; }
 
@@ -387,35 +401,8 @@ if [ -e "${ANCHOR}/.git" ] && command -v git >/dev/null 2>&1; then
     esac
   fi
 
-  # Fast-forward local main to origin/main, but ONLY when the checkout is
-  # clean and idle. A dirty tree or an in-progress merge/rebase means a human
-  # (or a worker that escaped its worktree) is mid-operation; touching HEAD
-  # would destroy that work. Untracked files are ignored on purpose: build
-  # caches and stray logs must not block the sync forever.
-  git_dir="$(g rev-parse --git-dir 2>/dev/null || true)"
-  case "${git_dir}" in /*) ;; *) git_dir="${ANCHOR}/${git_dir}" ;; esac
-  busy=0
-  [ -n "$(g status --porcelain --untracked-files=no 2>/dev/null || echo dirty)" ] && busy=1
-  [ -e "${git_dir}/MERGE_HEAD" ] && busy=1
-  [ -d "${git_dir}/rebase-merge" ] && busy=1
-  [ -d "${git_dir}/rebase-apply" ] && busy=1
-  if [ "${busy}" = 1 ]; then
-    warn "anchor ${ANCHOR} is dirty or mid-merge/rebase; NOT syncing main (workers will cut from the current HEAD)"
-  else
-    old_sha="$(g rev-parse --short HEAD 2>/dev/null || echo '?')"
-    # No --prune: see header. `fetch origin main` also updates the
-    # origin/main remote-tracking ref (opportunistic update, git >= 1.8.4).
-    if timeout 45 ${DROP} git -C "${ANCHOR}" fetch --quiet "${ANCHOR_REMOTE}" "${ANCHOR_BRANCH}" 2>/dev/null; then
-      if g checkout -q -B "${ANCHOR_BRANCH}" "${ANCHOR_REMOTE}/${ANCHOR_BRANCH}" 2>/dev/null; then
-        new_sha="$(g rev-parse --short HEAD 2>/dev/null || echo '?')"
-        log "anchor ${ANCHOR_BRANCH}: ${old_sha} -> ${new_sha} (${ANCHOR_REMOTE}/${ANCHOR_BRANCH})"
-      else
-        warn "anchor checkout -B ${ANCHOR_BRANCH} failed (main checked out elsewhere?); HEAD stays at ${old_sha}"
-      fi
-    else
-      warn "anchor fetch failed or timed out (offline / GH_TOKEN?); HEAD stays at ${old_sha}"
-    fi
-  fi
+  # Anchor sync is deferred to the render-kanban-guard plugin's
+  # kanban_task_claimed hook (see header note above). No boot-time fetch.
 
   # Drop admin entries for worktree dirs that no longer exist (upstream's
   # cleanup removes the dir; a redeploy can race it). Harmless when nothing

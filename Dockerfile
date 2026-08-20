@@ -189,6 +189,18 @@ COPY --chown=hermes:hermes skills/ /opt/render-tools/skills-local/
 COPY --chown=root:root scripts/patch-files-page.py /opt/render-tools/patch-files-page.py
 RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_server.py \
  && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text())"
+# Never-fail-silent for attached-image vision analysis. When the main model
+# lacks native vision (deepseek-v4-flash), the gateway pre-analyzes attached
+# images via the auxiliary.vision backend. If that analysis fails, the OLD code
+# injected a bland "[The user attached an image but analysis failed.]" into the
+# model's context and never told the user — a silent failure. This patch carries
+# the REAL reason into the model context AND surfaces a user-visible dashboard
+# error. Applied at build time because /opt/hermes is root-owned and the gateway
+# runs as uid 10000. Fails the build if upstream moves the code — see the script's
+# docstring; delete both once upstream fixes it.
+COPY --chown=root:root scripts/patch-vision-never-fail-silent.py /opt/render-tools/patch-vision-never-fail-silent.py
+RUN python3 /opt/render-tools/patch-vision-never-fail-silent.py /opt/hermes/tui_gateway/server.py \
+ && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/tui_gateway/server.py').read_text())"
 
 # Fix gated-mode upload authentication and add unified Chat attachments.
 # The patch adds a general document-cache endpoint, a paperclip/file picker,
