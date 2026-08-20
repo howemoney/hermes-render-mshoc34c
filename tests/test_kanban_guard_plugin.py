@@ -477,6 +477,29 @@ class AnchorSyncTests(unittest.TestCase):
                                             telemetry_schema_version=1)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.anchor), remote_tip)
 
+    def test_claim_time_sync_produces_fresh_worktree_base(self):
+        """Regression: the claim-time sync must bring the anchor to origin/main
+        BEFORE the dispatcher cuts a worktree from HEAD. A stale anchor would
+        produce a worktree behind main. This test proves the sync moves HEAD
+        to the remote tip, which is what _ensure_git_worktree would cut from."""
+        ctx = StubCtx({"anchor_repos": [str(self.anchor)]})
+        self.mod.register(ctx)
+        # Anchor is behind; remote has advanced.
+        stale = git("rev-parse", "HEAD", cwd=self.anchor)
+        fresh = self.advance_remote()
+        self.assertNotEqual(stale, fresh)
+        # Simulate the dispatcher's kanban_task_claimed hook firing.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_KANBAN_TASK", None)
+            self.mod.on_kanban_task_claimed(
+                task_id="t_x", profile_name="custom",
+                board="default", assignee="coder", run_id=1,
+            )
+        # The anchor's HEAD is now at the remote tip — a worktree cut from
+        # this HEAD would start on fresh main, not stale.
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.anchor), fresh)
+        self.assertEqual(git("rev-parse", "main", cwd=self.anchor), fresh)
+
 
 # ---------------------------------------------------------------------------
 # (c) System prompt section

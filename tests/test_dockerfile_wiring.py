@@ -115,6 +115,10 @@ class DockerfileWiringTests(unittest.TestCase):
         self.assertNotRegex(code, r"fetch[^\n]*--prune", "bootstrap must never fetch --prune (worktree cleanup hazard)")
         self.assertNotRegex(code, r"\bgit\b[^\n\"']*\bpush\b", "bootstrap must never push")
         self.assertNotRegex(code, r"--force\b|--hard\b", "bootstrap must never force anything")
+        # The boot-time anchor fetch was removed entirely; the authenticated
+        # sync now lives in the render-kanban-guard plugin's kanban_task_claimed
+        # hook. No `git fetch` should appear in executable code lines.
+        self.assertNotRegex(code, r"\bgit\b[^\n]*\bfetch\b", "bootstrap must not fetch at boot (moved to claim-time plugin)")
         self.assertTrue(src.rstrip().endswith("exit 0"))
 
     def test_pre_push_hook_content_valid(self):
@@ -332,7 +336,8 @@ class BootstrapDryRunTests(unittest.TestCase):
         board = json.loads((self.data / "kanban" / "boards" / "default" / "board.json").read_text(encoding="utf-8"))
         self.assertEqual(board["default_workdir"], str(anchor))
 
-        # (d) anchor config + fast-forward.
+        # (d) anchor config set, but NO boot-time fetch/sync. The anchor's
+        # HEAD stays where it was; the claim-time plugin handles the sync.
         self.assertEqual(self.ok(self.git(anchor, "config", "--local", "core.hooksPath")), str(self.tools / "git-hooks"))
         self.assertEqual(self.ok(self.git(anchor, "config", "user.name")), "Howe Agency Bot")
         self.assertEqual(self.ok(self.git(anchor, "config", "user.email")), "snhowe@gmail.com")
@@ -340,9 +345,12 @@ class BootstrapDryRunTests(unittest.TestCase):
         r2 = self.git(anchor, "config", "--get-all", "credential.helper")
         self.assertEqual(r2.stdout.strip(), "")
         self.assertIn("not https", out)
-        self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), tip)
-        self.assertEqual(self.ok(self.git(anchor, "rev-parse", "--abbrev-ref", "HEAD")), "main")
-        self.assertRegex(out, r"anchor main: [0-9a-f]+ -> [0-9a-f]+ \(origin/main\)")
+        # Anchor HEAD is NOT moved by boot; the sync is deferred to the plugin.
+        self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), before)
+        self.assertNotEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), tip)
+        # No fast-forward log line, no fetch warning.
+        self.assertNotIn("anchor main:", out)
+        self.assertNotIn("anchor fetch failed", out)
         self.assertIn("worktree prune ok", out)
 
         # (e) health probe + npm cache.
@@ -394,7 +402,10 @@ class BootstrapDryRunTests(unittest.TestCase):
         # No create was attempted because the dirs existed.
         self.assertNotIn("profile create", self.hermes_log.read_text(encoding="utf-8"))
 
-    def test_dirty_anchor_is_not_synced(self):
+    def test_dirty_anchor_is_not_touched(self):
+        # Boot no longer syncs the anchor at all (moved to claim-time plugin).
+        # A dirty anchor must simply be left alone — no warning about syncing,
+        # no HEAD change.
         remote, anchor, seed = self.make_anchor()
         self.ok(self.run_bootstrap())  # clean first boot
         tip = self.advance_remote(seed, "v3")
@@ -403,12 +414,15 @@ class BootstrapDryRunTests(unittest.TestCase):
 
         r = self.run_bootstrap()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("dirty or mid-merge/rebase; NOT syncing", r.stderr)
+        # No sync-related warnings at boot.
+        self.assertNotIn("NOT syncing", r.stderr)
+        self.assertNotIn("anchor fetch failed", r.stderr)
         self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), before)
         self.assertNotEqual(before, tip)
         self.assertEqual((anchor / "README").read_text(encoding="utf-8"), "local uncommitted edit\n")
 
-    def test_merge_in_progress_is_not_synced(self):
+    def test_merge_in_progress_is_not_touched(self):
+        # Same: boot does not sync, so a merge-in-progress is simply ignored.
         remote, anchor, seed = self.make_anchor()
         self.ok(self.run_bootstrap())
         before = self.ok(self.git(anchor, "rev-parse", "HEAD"))
@@ -417,26 +431,32 @@ class BootstrapDryRunTests(unittest.TestCase):
         self.advance_remote(seed, "v4")
         r = self.run_bootstrap()
         self.assertEqual(r.returncode, 0)
-        self.assertIn("NOT syncing", r.stderr)
+        self.assertNotIn("NOT syncing", r.stderr)
         self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), before)
 
-    def test_untracked_files_do_not_block_sync(self):
+    def test_untracked_files_do_not_affect_boot(self):
+        # Untracked files are irrelevant at boot — no sync happens.
         remote, anchor, seed = self.make_anchor()
         tip = self.advance_remote(seed, "v5")
         (anchor / "stray.log").write_text("x\n", encoding="utf-8")
+        before = self.ok(self.git(anchor, "rev-parse", "HEAD"))
         self.ok(self.run_bootstrap())
-        self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), tip)
+        # HEAD unchanged — boot does not sync.
+        self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), before)
+        self.assertNotEqual(before, tip)
 
-    def test_https_remote_gets_gh_credential_helper_and_fetch_failure_is_soft(self):
+    def test_https_remote_gets_gh_credential_helper(self):
+        # Boot sets the gh credential helper for https remotes, but does NOT
+        # fetch (sync is deferred to the claim-time plugin). So an unreachable
+        # https remote is fine: helper is set, HEAD stays, no fetch warning.
         remote, anchor, seed = self.make_anchor()
         before = self.ok(self.git(anchor, "rev-parse", "HEAD"))
-        # An https remote nobody answers: connection refused -> fetch fails
-        # fast; the script must warn, keep HEAD, and still exit 0.
         self.ok(self.git(anchor, "remote", "set-url", "origin", "https://127.0.0.1:9/howemoney/stopsargassum.git"))
         r = self.run_bootstrap()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.ok(self.git(anchor, "config", "--get", "credential.helper")), "!gh auth git-credential")
-        self.assertIn("anchor fetch failed or timed out", r.stderr)
+        # No fetch at boot -> no fetch warning.
+        self.assertNotIn("anchor fetch failed", r.stderr)
         self.assertEqual(self.ok(self.git(anchor, "rev-parse", "HEAD")), before)
         self.assertIn("kanban-bootstrap: done", r.stdout)
 
