@@ -17,7 +17,7 @@
 #   claims, a real review lifecycle + the bundled sdlc-review skill,
 #   worktree cleanup, `hermes pause`). Boot contract (entrypoint-dispatch.sh,
 #   s6 services, cont-init hooks) is unchanged between the two tags.
-ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.18
+ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.8.31
 FROM ${HERMES_IMAGE}
 
 # Everything below runs as root at build time; the runtime user is still the
