@@ -61,6 +61,15 @@ class HelperTests(unittest.TestCase):
     def test_default_render_mcp_entry_does_not_filter_tools(self):
         self.assertNotIn("tools", self.pc._render_entry())
 
+    def test_skillspector_mcp_is_local_pinned_and_cannot_sample(self):
+        entry = self.pc._skillspector_entry()
+        self.assertEqual(entry["command"], "/opt/skillspector/bin/skillspector")
+        self.assertEqual(entry["args"], ["mcp"])
+        self.assertEqual(entry["sampling"], {"enabled": False})
+        cfg = {}
+        self.assertTrue(self.pc.ensure_skillspector_mcp(cfg))
+        self.assertFalse(self.pc.ensure_skillspector_mcp(cfg))
+
     def test_ensure_nested_inserts_when_missing(self):
         cfg: dict = {}
         self.assertTrue(self.pc.ensure_nested(cfg, "kanban.max_in_progress", 2))
@@ -277,6 +286,9 @@ class RootFileTests(unittest.TestCase):
         self.assertEqual(code, 0)
         cfg = self.read()
         self.assertEqual(cfg["mcp_servers"]["render"]["url"], self.pc.RENDER_MCP_URL)
+        self.assertEqual(
+            cfg["mcp_servers"]["skillspector"], self.pc._skillspector_entry()
+        )
         self.assertEqual(cfg["skills"]["external_dirs"], list(self.pc.RENDER_SKILL_DIRS))
         self.assertEqual(cfg["kanban"]["default_assignee"], "coder")
         self.assertEqual(cfg["kanban"]["max_in_progress"], 2)

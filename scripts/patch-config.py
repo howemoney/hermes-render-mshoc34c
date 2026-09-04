@@ -135,6 +135,8 @@ RENDER_SKILL_DIRS = (
 )
 RENDER_SKILLS_LOCAL = RENDER_SKILL_DIRS[0]
 RENDER_MCP_URL = "https://mcp.render.com/mcp"
+SKILLSPECTOR_MCP_COMMAND = "/opt/skillspector/bin/skillspector"
+SKILLSPECTOR_MCP_ARGS = ["mcp"]
 
 # GitHub MCP server for the worker profiles.
 #
@@ -391,6 +393,31 @@ def ensure_render_mcp(config: dict) -> bool:
     return True
 
 
+def _skillspector_entry() -> dict:
+    return {
+        "command": SKILLSPECTOR_MCP_COMMAND,
+        "args": list(SKILLSPECTOR_MCP_ARGS),
+        "timeout": 300,
+        "connect_timeout": 60,
+        "sampling": {"enabled": False},
+    }
+
+
+def ensure_skillspector_mcp(config: dict) -> bool:
+    """Insert the pinned local SkillSpector stdio MCP server if missing."""
+    mcp_servers = config.get("mcp_servers")
+    if mcp_servers is None:
+        config["mcp_servers"] = {"skillspector": _skillspector_entry()}
+        return True
+    if not isinstance(mcp_servers, dict):
+        _warn("mcp_servers is not a mapping; skipping skillspector entry")
+        return False
+    if "skillspector" in mcp_servers:
+        return False
+    mcp_servers["skillspector"] = _skillspector_entry()
+    return True
+
+
 def ensure_external_skill_dirs(config: dict, dirs: tuple[str, ...] = RENDER_SKILL_DIRS) -> list[str]:
     """Append the render-tools skill dirs to skills.external_dirs if missing.
 
@@ -463,6 +490,8 @@ def patch_root(config: dict) -> PatchReport:
     report = PatchReport()
     if ensure_render_mcp(config):
         report.inserted.append("mcp_servers.render")
+    if ensure_skillspector_mcp(config):
+        report.inserted.append("mcp_servers.skillspector")
     for dir_path in ensure_external_skill_dirs(config):
         report.inserted.append(f"skills.external_dirs += {dir_path}")
     apply_tiers(
