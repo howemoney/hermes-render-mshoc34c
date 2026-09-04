@@ -57,6 +57,15 @@ RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache langfuse
 # and the image toolset reports available=True.
 RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache 'fal-client==0.13.1'
 
+# NVIDIA SkillSpector: pinned security scanner + MCP server. Install into a
+# dedicated environment so its dependency graph cannot perturb Hermes. The
+# commit pin is the exact source revision audited by Howe Agency.
+ARG SKILLSPECTOR_REF=7805bb94843d91cb9937f57264ca52642164499b
+RUN uv venv --python 3.13 /opt/skillspector \
+ && uv pip install --python /opt/skillspector/bin/python --no-cache \
+      "skillspector[mcp] @ git+https://github.com/NVIDIA/SkillSpector.git@${SKILLSPECTOR_REF}" \
+ && /opt/skillspector/bin/skillspector --version
+
 # Put `hermes` on PATH for spawned processes. The kanban dispatcher shells out
 # to a bare `hermes` to start each worker, but the binary lives in the venv at
 # /opt/hermes/.venv/bin/hermes, which is not on PATH for dispatcher-spawned
@@ -189,6 +198,12 @@ COPY --chown=hermes:hermes skills/ /opt/render-tools/skills-local/
 COPY --chown=root:root scripts/patch-files-page.py /opt/render-tools/patch-files-page.py
 RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_server.py \
  && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text())"
+
+# Require a completed NVIDIA SkillSpector score before `hermes skills publish`
+# can create an external PR. Hermes' native scan remains as a second gate.
+COPY --chown=root:root scripts/patch-skillspector-publish-gate.py /opt/render-tools/patch-skillspector-publish-gate.py
+RUN python3 /opt/render-tools/patch-skillspector-publish-gate.py /opt/hermes/hermes_cli/skills_hub.py \
+ && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/skills_hub.py').read_text())"
 # Vision never-fail-silent: upstream Hermes v2026.8.18 (v0.20.4) already
 # eliminated this problem by replacing _enrich_with_attached_images with
 # _build_image_ref_message (tui_gateway/server.py:7173), which no longer
