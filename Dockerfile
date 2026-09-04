@@ -199,6 +199,18 @@ COPY --chown=root:root scripts/patch-files-page.py /opt/render-tools/patch-files
 RUN python3 /opt/render-tools/patch-files-page.py /opt/hermes/hermes_cli/web_server.py \
  && /opt/hermes/.venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('/opt/hermes/hermes_cli/web_server.py').read_text())"
 
+# Fix two async-lifecycle defects visible as continuous production errors:
+# an MCP child-watcher coroutine created and discarded during every stdio RPC,
+# and a Langfuse/OpenTelemetry context manager entered in one asyncio Context
+# then exited after the turn resumes in another. Both patches preserve behavior
+# while making resource ownership task-local. Delete after the pinned upstream
+# image includes equivalent fixes.
+COPY --chown=root:root scripts/patch-runtime-async-errors.py /opt/render-tools/patch-runtime-async-errors.py
+RUN python3 /opt/render-tools/patch-runtime-async-errors.py \
+      /opt/hermes/tools/mcp_tool.py \
+      /opt/hermes/plugins/observability/langfuse/__init__.py \
+ && /opt/hermes/.venv/bin/python -c "import ast,pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ('/opt/hermes/tools/mcp_tool.py','/opt/hermes/plugins/observability/langfuse/__init__.py')]"
+
 # Require a completed NVIDIA SkillSpector score before `hermes skills publish`
 # can create an external PR. Hermes' native scan remains as a second gate.
 COPY --chown=root:root scripts/patch-skillspector-publish-gate.py /opt/render-tools/patch-skillspector-publish-gate.py
